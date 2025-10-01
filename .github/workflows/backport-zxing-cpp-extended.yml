@@ -81,12 +81,12 @@ jobs:
           SUITE: ${{ matrix.suite }}
           ARCH: ${{ matrix.arch }}
         run: |
+          set -e
           sudo mkdir -p /var/lib/sbuild
-          # Keyring definieren
-          STABLE_KR="/usr/share/keyrings/debian-archive-${SUITE}-stable.gpg"
-          # Tarball-Pfad definieren
           TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.zst"
-          # Tarball erzeugen (mmdebstrap wird automatisch genutzt, wenn installiert)
+
+          STABLE_KR="/usr/share/keyrings/debian-archive-${SUITE}-stable.gpg"
+
           sudo sbuild-createchroot \
             --debootstrap=mmdebstrap \
             --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg \
@@ -98,6 +98,10 @@ jobs:
             --arch="$ARCH" \
             --make-sbuild-tarball="$TARBALL" \
             "$SUITE" http://deb.debian.org/debian
+
+          # ensure the runner can read the tarball
+          sudo chown $USER:$USER "$TARBALL"
+          sudo chmod 0644 "$TARBALL"
 
       - name: Fetch source from ${{ env.FROM_SUITE }}
         run: |
@@ -182,19 +186,24 @@ jobs:
           SUITE: ${{ matrix.suite }}
           ARCH: ${{ matrix.arch }}
         run: |
+          # find the .dsc robustly (prefer ~bpo, else any)
+          shopt -s nullglob
           DSC=(./${PKG}_*~bpo*.dsc)
-          if [ ! -e "${DSC[0]}" ]; then
+          if [ ${#DSC[@]} -eq 0 ]; then
             DSC=(./${PKG}_*.dsc)
           fi
+          echo "Using DSC: ${DSC[0]}"
+
           TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.zst"
-          # Optional: sanity check
           ls -l "$TARBALL"
-          sbuild \
-            --arch="${ARCH}" \
-            --dist="${SUITE}" \
+
+          # run sbuild with sbuild group privileges in this shell
+          sg sbuild -c "sbuild \
+            --arch='${ARCH}' \
+            --dist='${SUITE}' \
             --chroot-mode=unshare \
-            --chroot="${TARBALL}" \
-            "${DSC[0]}"
+            --chroot='${TARBALL}' \
+            '${DSC[0]}'"
 
       - name: Import GPG key (optional)
         env:
