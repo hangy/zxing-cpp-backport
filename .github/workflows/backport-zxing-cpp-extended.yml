@@ -100,10 +100,35 @@ jobs:
 
       - name: Fetch source from ${{ env.FROM_SUITE }}
         run: |
-          echo "deb-src http://deb.debian.org/debian ${FROM_SUITE} main" | sudo tee /etc/apt/sources.list.d/from-src.list
+          set -e
+          # Ensure keyrings are present on the Ubuntu host
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends debian-archive-keyring
+
+          # Create a Deb822 sources file with explicit Signed-By keyrings
+          KR_CURRENT=/usr/share/keyrings/debian-archive-keyring.gpg
+          case "${FROM_SUITE}" in
+            bullseye) KR_STABLE=/usr/share/keyrings/debian-archive-bullseye-stable.gpg ;;
+            bookworm) KR_STABLE=/usr/share/keyrings/debian-archive-bookworm-stable.gpg ;;
+            trixie|unstable) KR_STABLE="$KR_CURRENT" ;;  # trixie/testing uses current set
+            *) KR_STABLE="$KR_CURRENT" ;;
+          esac
+          KR_REMOVED=/usr/share/keyrings/debian-archive-removed-keys.gpg
+
+          sudo tee /etc/apt/sources.list.d/debian.sources > /dev/null <<EOF
+          Types: deb-src
+          URIs: http://deb.debian.org/debian
+          Suites: ${FROM_SUITE}
+          Components: main
+          Signed-By: ${KR_CURRENT} ${KR_STABLE} ${KR_REMOVED}
+          EOF
+
+          # Update and fetch the source *without* switching the host to Debian
           sudo apt-get update
           apt source -t "${FROM_SUITE}" "${PKG}"
-          sudo rm /etc/apt/sources.list.d/from-src.list
+
+          # Clean up the temporary Debian source entry (optional but nice)
+          sudo rm -f /etc/apt/sources.list.d/debian.sources
           sudo apt-get update
 
       - name: Apply backport version (auto-increment) & toggles
