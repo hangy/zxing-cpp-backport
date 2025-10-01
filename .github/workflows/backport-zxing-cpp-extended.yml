@@ -216,34 +216,38 @@ jobs:
 
       - name: Build APT repository (latest & snapshots)
         shell: bash
+        env:
+          PKG: zxing-cpp
         run: |
           set -e
           REPO=repo
           mkdir -p "$REPO/conf"
-          # Basiskonfiguration für "latest"-Suites
+          # Basiskonfiguration für "latest"-Suites (Heredoc mit korrekter Einrückung)
           cat > "$REPO/conf/distributions" <<'EOF'
-Codename: bullseye
-Components: main
-Architectures: amd64 arm64 source
-SignWith: default
+          Codename: bullseye
+          Components: main
+          Architectures: amd64 arm64 source
+          SignWith: default
 
-Codename: bookworm
-Components: main
-Architectures: amd64 arm64 source
-SignWith: default
-EOF
+          Codename: bookworm
+          Components: main
+          Architectures: amd64 arm64 source
+          SignWith: default
+          EOF
 
-          shopt -s nullglob
+          # Robustere Globs
+          shopt -s nullglob globstar
+
           # 1) Neueste Artefakte in die "latest"-Suites aufnehmen
           for suite in bullseye bookworm; do
             # Binärpakete
-            for deb in dist/**/${PKG}_*_*\.deb; do
+            for deb in dist/**/${PKG}_*_*.deb; do
               case "$deb" in
                 *-${suite}-*) reprepro -b "$REPO" includedeb "$suite" "$deb" || true ;;
               esac
             done
             # Debug-Pakete
-            for ddeb in dist/**/${PKG}_*_*\.ddeb; do
+            for ddeb in dist/**/${PKG}_*_*.ddeb; do
               case "$ddeb" in
                 *-${suite}-*) reprepro -b "$REPO" includedeb "$suite" "$ddeb" || true ;;
               esac
@@ -262,14 +266,14 @@ EOF
             for suite in bullseye bookworm; do
               SNAP_SUITE="${suite}-${TAG}"
 
-              # Distribution-Eintrag für Snapshot anlegen (falls noch nicht da)
+              # Distribution-Eintrag für Snapshot anlegen (Heredoc korrekt eingerückt)
               if ! grep -q "Codename: ${SNAP_SUITE}" "$REPO/conf/distributions"; then
                 cat >> "$REPO/conf/distributions" <<EOF
-Codename: ${SNAP_SUITE}
-Components: main
-Architectures: amd64 arm64 source
-SignWith: default
-EOF
+                Codename: ${SNAP_SUITE}
+                Components: main
+                Architectures: amd64 arm64 source
+                SignWith: default
+                EOF
               fi
 
               # Pakete aus "latest" in Snapshot kopieren
@@ -287,8 +291,6 @@ EOF
 
           # Tarball fürs Release
           tar -C "$REPO" -czf repo.tar.gz .
-        env:
-          PKG: zxing-cpp
 
       - name: Upload APT repo artifact
         uses: actions/upload-artifact@v4
@@ -352,11 +354,12 @@ EOF
 
       - name: Tag backport counters per suite
         shell: bash
+        env:
+          PKG: zxing-cpp
         run: |
           set -e
           mapfile -t DSCS < <(find dist -type f -name "${PKG}_*.dsc")
           for dsc in "${DSCS[@]}"; do
-            # Version aus Dateiname ziehen (robust)
             VER=$(basename "$dsc" | sed -E 's/.*_([^_]+)\.dsc/\1/')
             SUITE_TAG=""
             echo "$VER" | grep -q "~bpo11+" && SUITE_TAG="bullseye"
@@ -373,5 +376,3 @@ EOF
               git push origin "${TAG}"
             fi
           done
-        env:
-          PKG: zxing-cpp
