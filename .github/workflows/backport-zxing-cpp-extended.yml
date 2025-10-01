@@ -183,7 +183,7 @@ jobs:
           cd "$SRC_DIR"
           dpkg-buildpackage -S -us -uc -d
 
-      - name: sbuild (clean chroot build)
+      - name: sbuild (schroot mode; use named chroot)
         env:
           SUITE: ${{ matrix.suite }}
           ARCH: ${{ matrix.arch }}
@@ -196,15 +196,11 @@ jobs:
           fi
           echo "Using DSC: ${DSC[0]}"
 
-          TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.xz"
-          # This ls now works because file is 0644, dir is 0755
-          ls -l "$TARBALL"
-
+          CHROOT_NAME="${SUITE}-${ARCH}-sbuild"   # e.g. bullseye-amd64-sbuild
           sg sbuild -c "sbuild \
             --arch='${ARCH}' \
             --dist='${SUITE}' \
-            --chroot-mode=unshare \
-            --chroot='${TARBALL}' \
+            --chroot='${CHROOT_NAME}' \
             '${DSC[0]}'"
 
       - name: Import GPG key (optional)
