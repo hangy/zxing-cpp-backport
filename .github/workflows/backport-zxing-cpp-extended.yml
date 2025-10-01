@@ -89,14 +89,12 @@ jobs:
           CHROOT_NAME="${SUITE}-${ARCH}-sbuild"
           CHROOT_DIR="/srv/chroot/${CHROOT_NAME}"
 
-          # Create the directory-based schroot and register it
           sudo sbuild-createchroot \
             --arch="${ARCH}" \
-            --chroot-name="${CHROOT_NAME}" \
             --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
             "${SUITE}" "${CHROOT_DIR}" http://deb.debian.org/debian
 
-          # Let the runner user access schroot/sbuild
+          # Add current user to sbuild group
           sudo adduser $USER sbuild || true
 
       - name: Fetch source from ${{ env.FROM_SUITE }}
