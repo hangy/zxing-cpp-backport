@@ -35,6 +35,7 @@ env:
   FROM_SUITE: ${{ inputs.from_suite || 'trixie' }}
   PYBIND: ${{ inputs.python_bindings || 'on' }}
   SIGN_RELEASE: ${{ inputs.sign_release || 'yes' }}
+  DEBEMAIL: ${{ github.event.pusher.email }}
 
 jobs:
   build:
