@@ -65,7 +65,8 @@ jobs:
             debian-archive-keyring devscripts equivs git ca-certificates \
             sbuild mmdebstrap debhelper dpkg-dev fakeroot eatmydata quilt \
             gnupg dput reprepro \
-            qemu-user-static binfmt-support
+            qemu-user-static binfmt-support \
+            schroot zstd
 
       - name: Prepare sbuild user & dirs
         run: |
