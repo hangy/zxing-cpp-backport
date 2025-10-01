@@ -160,7 +160,7 @@ jobs:
           echo "Using backport version: ${NEW_VER}"
 
           # Changelog setzen
-          dch --newversion "${NEW_VER}" --distribution "${{ matrix.suite }}" \
+          dch -b --newversion "${NEW_VER}" --distribution "${{ matrix.suite }}" \
               "Automated backport to ${{ matrix.suite }} (CI bump to ${NEW_VER})."
 
           # Optional: Python-Bindings deaktivieren
