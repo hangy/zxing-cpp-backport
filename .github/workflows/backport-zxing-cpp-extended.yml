@@ -62,7 +62,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            debian-archive-keyring devscripts equivs git ca-certificates \
+            ubuntu-keyring debian-archive-keyring devscripts equivs git ca-certificates \
             sbuild mmdebstrap debhelper dpkg-dev fakeroot eatmydata quilt \
             gnupg dput reprepro \
             qemu-user-static binfmt-support \
@@ -88,9 +88,11 @@ jobs:
           # Tarball erzeugen (mmdebstrap wird automatisch genutzt, wenn installiert)
           sudo sbuild-createchroot \
             --debootstrap=mmdebstrap \
+            --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg \
             --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
             --keyring="$STABLE_KR" \
             --keyring=/usr/share/keyrings/debian-archive-removed-keys.gpg \
+            --keyring=/usr/share/keyrings/ubuntu-archive-removed-keys.gpg \
             --include=eatmydata,ccache,qemu-user-static \
             --arch="$ARCH" \
             --make-sbuild-tarball="$TARBALL" \
