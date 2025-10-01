@@ -82,8 +82,9 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          sudo mkdir -p /var/lib/sbuild
-          # Use .tar.xz (widely supported)
+          # Ensure dir exists and is traversable by the runner for later checks
+          sudo install -d -m 0755 -o root -g sbuild /var/lib/sbuild
+
           TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.xz"
           STABLE_KR="/usr/share/keyrings/debian-archive-${SUITE}-stable.gpg"
 
@@ -99,15 +100,8 @@ jobs:
             --make-sbuild-tarball="$TARBALL" \
             "$SUITE" http://deb.debian.org/debian
 
-          # Fail early if the tarball wasn't created
-          if [ ! -s "$TARBALL" ]; then
-            echo "ERROR: Tarball not created at $TARBALL"
-            echo "Contents of /var/lib/sbuild:"
-            ls -l /var/lib/sbuild || true
-            exit 1
-          fi
-
-          # Ensure the runner can read it
+          # Verify as root (dir may still be 0750), then relax file perms for the runner
+          sudo test -s "$TARBALL" || { echo "ERROR: $TARBALL not found or empty"; sudo ls -l /var/lib/sbuild || true; exit 1; }
           sudo chown "$USER:$USER" "$TARBALL"
           sudo chmod 0644 "$TARBALL"
 
@@ -203,9 +197,9 @@ jobs:
           echo "Using DSC: ${DSC[0]}"
 
           TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.xz"
+          # This ls now works because file is 0644, dir is 0755
           ls -l "$TARBALL"
 
-          # Run with sbuild group privileges (no new login)
           sg sbuild -c "sbuild \
             --arch='${ARCH}' \
             --dist='${SUITE}' \
