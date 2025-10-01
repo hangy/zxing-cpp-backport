@@ -67,7 +67,7 @@ jobs:
             sbuild mmdebstrap debhelper dpkg-dev fakeroot eatmydata quilt \
             gnupg dput reprepro \
             qemu-user-static binfmt-support \
-            schroot zstd arch-test
+            schroot zstd arch-test xz-utils
 
       - name: Prepare sbuild user & dirs
         run: |
@@ -81,10 +81,10 @@ jobs:
           SUITE: ${{ matrix.suite }}
           ARCH: ${{ matrix.arch }}
         run: |
-          set -e
+          set -euo pipefail
           sudo mkdir -p /var/lib/sbuild
-          TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.zst"
-
+          # Use .tar.xz (widely supported)
+          TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.xz"
           STABLE_KR="/usr/share/keyrings/debian-archive-${SUITE}-stable.gpg"
 
           sudo sbuild-createchroot \
@@ -99,8 +99,16 @@ jobs:
             --make-sbuild-tarball="$TARBALL" \
             "$SUITE" http://deb.debian.org/debian
 
-          # ensure the runner can read the tarball
-          sudo chown $USER:$USER "$TARBALL"
+          # Fail early if the tarball wasn't created
+          if [ ! -s "$TARBALL" ]; then
+            echo "ERROR: Tarball not created at $TARBALL"
+            echo "Contents of /var/lib/sbuild:"
+            ls -l /var/lib/sbuild || true
+            exit 1
+          fi
+
+          # Ensure the runner can read it
+          sudo chown "$USER:$USER" "$TARBALL"
           sudo chmod 0644 "$TARBALL"
 
       - name: Fetch source from ${{ env.FROM_SUITE }}
@@ -186,7 +194,7 @@ jobs:
           SUITE: ${{ matrix.suite }}
           ARCH: ${{ matrix.arch }}
         run: |
-          # find the .dsc robustly (prefer ~bpo, else any)
+          set -euo pipefail
           shopt -s nullglob
           DSC=(./${PKG}_*~bpo*.dsc)
           if [ ${#DSC[@]} -eq 0 ]; then
@@ -194,10 +202,10 @@ jobs:
           fi
           echo "Using DSC: ${DSC[0]}"
 
-          TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.zst"
+          TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.xz"
           ls -l "$TARBALL"
 
-          # run sbuild with sbuild group privileges in this shell
+          # Run with sbuild group privileges (no new login)
           sg sbuild -c "sbuild \
             --arch='${ARCH}' \
             --dist='${SUITE}' \
