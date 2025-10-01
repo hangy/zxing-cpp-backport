@@ -81,12 +81,14 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           sudo mkdir -p /var/lib/sbuild
+          # Keyring definieren
+          KR="/usr/share/keyrings/debian-archive-keyring.gpg:/usr/share/keyrings/debian-archive-${SUITE}-stable.gpg:/usr/share/keyrings/debian-archive-removed-keys.gpg"
           # Tarball-Pfad definieren
           TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.zst"
           # Tarball erzeugen (mmdebstrap wird automatisch genutzt, wenn installiert)
           sudo sbuild-createchroot \
             --debootstrap=mmdebstrap \
-            --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
+            --keyring="$KR" \
             --include=eatmydata,ccache,qemu-user-static \
             --arch="$ARCH" \
             --make-sbuild-tarball="$TARBALL" \
