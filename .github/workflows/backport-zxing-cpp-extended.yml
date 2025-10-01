@@ -187,11 +187,13 @@ jobs:
             DSC=(./${PKG}_*.dsc)
           fi
           TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.zst"
+          # Optional: sanity check
+          ls -l "$TARBALL"
           sbuild \
             --arch="${ARCH}" \
             --dist="${SUITE}" \
             --chroot-mode=unshare \
-            --chroot-tarball="${TARBALL}" \
+            --chroot="${TARBALL}" \
             "${DSC[0]}"
 
       - name: Import GPG key (optional)
