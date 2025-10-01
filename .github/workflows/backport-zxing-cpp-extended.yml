@@ -175,7 +175,7 @@ jobs:
         run: |
           SRC_DIR=$(echo ${PKG}-*)
           cd "$SRC_DIR"
-          dpkg-buildpackage -S -us -uc
+          dpkg-buildpackage -S -us -uc -d
 
       - name: sbuild (clean chroot build)
         env:
