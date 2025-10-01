@@ -34,6 +34,7 @@ env:
   PKG: zxing-cpp
   FROM_SUITE: ${{ inputs.from_suite || 'trixie' }}
   PYBIND: ${{ inputs.python_bindings || 'on' }}
+  SIGN_RELEASE: ${{ inputs.sign_release || 'yes' }}
 
 jobs:
   build:
@@ -147,22 +148,30 @@ jobs:
           sbuild --arch="${ARCH}" --dist="${SUITE}" --chroot-mode=unshare "${DSC[0]}"
 
       - name: Import GPG key (optional)
-        if: ${{ (inputs.sign_release == 'yes') || (github.event.inputs.sign_release == null && secrets.GPG_PRIVATE_KEY != '') }}
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          SIGN_RELEASE: ${{ env.SIGN_RELEASE }}
         run: |
-          [ -n "$GPG_PRIVATE_KEY" ] || { echo "No GPG key provided, skipping import"; exit 0; }
+          if [ "$SIGN_RELEASE" != "yes" ] || [ -z "$GPG_PRIVATE_KEY" ]; then
+            echo "Signing disabled or no GPG key provided. Skipping import."
+            exit 0
+          fi
           echo "$GPG_PRIVATE_KEY" | gpg --batch --import
           echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf
           echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
           gpgconf --reload gpg-agent
 
       - name: Debsign artifacts (optional)
-        if: ${{ (inputs.sign_release == 'yes') || (github.event.inputs.sign_release == null && secrets.GPG_PRIVATE_KEY != '') }}
         env:
+          SIGN_RELEASE: ${{ env.SIGN_RELEASE }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
           GPG_KEYID: ${{ secrets.GPG_KEYID }}
         run: |
+          if [ "$SIGN_RELEASE" != "yes" ] || [ -z "$GPG_PRIVATE_KEY" ]; then
+            echo "Signing disabled or no GPG key provided. Skipping debsign."
+            exit 0
+          fi
           set -e
           CHG=(./${PKG}_*_${{ matrix.arch }}.changes)
           DSC=(./${PKG}_*.dsc)
@@ -205,10 +214,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends reprepro gnupg
 
       - name: Prepare signing key (optional)
-        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          SIGN_RELEASE: ${{ env.SIGN_RELEASE }}
         run: |
+          if [ "$SIGN_RELEASE" != "yes" ] || [ -z "$GPG_PRIVATE_KEY" ]; then
+            echo "Signing disabled or no GPG key provided. Skipping repo key import."
+            exit 0
+          fi
           echo "$GPG_PRIVATE_KEY" | gpg --batch --import
           echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf
           echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
@@ -218,11 +231,11 @@ jobs:
         shell: bash
         env:
           PKG: zxing-cpp
+          SIGN_RELEASE: ${{ env.SIGN_RELEASE }}
         run: |
           set -e
           REPO=repo
           mkdir -p "$REPO/conf"
-          # Basiskonfiguration für "latest"-Suites (Heredoc mit korrekter Einrückung)
           cat > "$REPO/conf/distributions" <<'EOF'
           Codename: bullseye
           Components: main
@@ -235,24 +248,18 @@ jobs:
           SignWith: default
           EOF
 
-          # Robustere Globs
           shopt -s nullglob globstar
-
-          # 1) Neueste Artefakte in die "latest"-Suites aufnehmen
           for suite in bullseye bookworm; do
-            # Binärpakete
             for deb in dist/**/${PKG}_*_*.deb; do
               case "$deb" in
                 *-${suite}-*) reprepro -b "$REPO" includedeb "$suite" "$deb" || true ;;
               esac
             done
-            # Debug-Pakete
             for ddeb in dist/**/${PKG}_*_*.ddeb; do
               case "$ddeb" in
                 *-${suite}-*) reprepro -b "$REPO" includedeb "$suite" "$ddeb" || true ;;
               esac
             done
-            # Source-Pakete
             for dsc in dist/**/${PKG}_*.dsc; do
               case "$dsc" in
                 *-${suite}-*) reprepro -b "$REPO" includedsc "$suite" "$dsc" || true ;;
@@ -260,13 +267,10 @@ jobs:
             done
           done
 
-          # 2) Snapshot-Suites bei Tag-Builds erzeugen und füllen
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"   # z.B. v1.2.3
+            TAG="${GITHUB_REF#refs/tags/}"
             for suite in bullseye bookworm; do
               SNAP_SUITE="${suite}-${TAG}"
-
-              # Distribution-Eintrag für Snapshot anlegen (Heredoc korrekt eingerückt)
               if ! grep -q "Codename: ${SNAP_SUITE}" "$REPO/conf/distributions"; then
                 cat >> "$REPO/conf/distributions" <<EOF
                 Codename: ${SNAP_SUITE}
@@ -275,8 +279,6 @@ jobs:
                 SignWith: default
                 EOF
               fi
-
-              # Pakete aus "latest" in Snapshot kopieren
               reprepro -b "$REPO" createsymlinks
               for pkg in ${PKG} ${PKG}-tools libzxing3 libzxing-dev python3-zxing-cpp; do
                 reprepro -b "$REPO" copypackages "$SNAP_SUITE" "$suite" "$pkg" || true
@@ -285,11 +287,12 @@ jobs:
             done
           fi
 
-          # Öffentlichen Schlüssel exportieren
           mkdir -p "$REPO/keys"
-          gpg --batch --export -a > "$REPO/keys/repo.asc" || true
+          # Key nur exportieren, wenn vorhanden – sonst still weitermachen
+          if gpg --batch --list-keys >/dev/null 2>&1; then
+            gpg --batch --export -a > "$REPO/keys/repo.asc" || true
+          fi
 
-          # Tarball fürs Release
           tar -C "$REPO" -czf repo.tar.gz .
 
       - name: Upload APT repo artifact
