@@ -20,7 +20,7 @@ on:
         default: yes
   push:
     tags:
-      - "v*.*.*"     # Tag-Push triggert Release + Snapshots
+      - "v*.*.*"     # Tag-Push triggers Release + Snapshots
     branches: [ main ]
     paths:
       - "debian/**"
@@ -32,10 +32,10 @@ permissions:
 
 env:
   PKG: zxing-cpp
-  FROM_SUITE: ${{ inputs.from_suite || 'trixie' }}
-  PYBIND: ${{ inputs.python_bindings || 'on' }}
-  SIGN_RELEASE: ${{ inputs.sign_release || 'yes' }}
-  DEBEMAIL: ${{ github.event.pusher.email }}
+  # Coerce workflow_dispatch inputs to predictable strings; provide defaults for push events
+  FROM_SUITE: ${{ (github.event_name == 'workflow_dispatch' && inputs.from_suite) || 'trixie' }}
+  PYBIND: ${{ (github.event_name == 'workflow_dispatch' && inputs.python_bindings) || 'on' }}
+  SIGN_RELEASE: ${{ (github.event_name == 'workflow_dispatch' && inputs.sign_release) || 'yes' }}
 
 jobs:
   build:
@@ -48,11 +48,15 @@ jobs:
     env:
       BPO11: "~bpo11+"
       BPO12: "~bpo12+"
+      # Provide maintainer identity for dch to avoid prompts
+      DEBFULLNAME: CI Backporter
+      DEBEMAIL: ${{ github.actor }}@users.noreply.github.com
     steps:
       - name: Checkout (with tags)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Setup QEMU for cross-arch
         uses: docker/setup-qemu-action@v3
@@ -64,10 +68,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ubuntu-keyring debian-archive-keyring devscripts equivs git ca-certificates dh-python \
-            sbuild mmdebstrap debhelper dpkg-dev fakeroot eatmydata quilt \
+            sbuild debhelper dpkg-dev fakeroot eatmydata quilt \
             gnupg dput reprepro \
             qemu-user-static binfmt-support \
-            schroot zstd arch-test xz-utils
+            schroot zstd arch-test xz-utils \
+            libdistro-info-perl
 
       - name: Prepare sbuild user & dirs
         run: |
@@ -76,7 +81,7 @@ jobs:
           sudo mkdir -p /var/lib/sbuild
           sudo chown -R sbuild:sbuild /var/lib/sbuild
 
-      - name: Create chroot tarball (mmdebstrap + unshare)
+      - name: Create chroot tarball (debootstrap via sbuild-createchroot)
         env:
           SUITE: ${{ matrix.suite }}
           ARCH: ${{ matrix.arch }}
@@ -84,23 +89,15 @@ jobs:
           set -euo pipefail
           # Ensure dir exists and is traversable by the runner for later checks
           sudo install -d -m 0755 -o root -g sbuild /var/lib/sbuild
-
           TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.xz"
-          STABLE_KR="/usr/share/keyrings/debian-archive-${SUITE}-stable.gpg"
 
+          # Use classic debootstrap (avoids Signed-By conflicts inside chroot)
           sudo sbuild-createchroot \
-            --debootstrap=mmdebstrap \
-            --keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg \
-            --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
-            --keyring="$STABLE_KR" \
-            --keyring=/usr/share/keyrings/debian-archive-removed-keys.gpg \
-            --keyring=/usr/share/keyrings/ubuntu-archive-removed-keys.gpg \
-            --include=eatmydata,ccache,qemu-user-static \
             --arch="$ARCH" \
             --make-sbuild-tarball="$TARBALL" \
             "$SUITE" http://deb.debian.org/debian
 
-          # Verify as root (dir may still be 0750), then relax file perms for the runner
+          # Verify as root, then relax file perms for the runner
           sudo test -s "$TARBALL" || { echo "ERROR: $TARBALL not found or empty"; sudo ls -l /var/lib/sbuild || true; exit 1; }
           sudo chown "$USER:$USER" "$TARBALL"
           sudo chmod 0644 "$TARBALL"
@@ -145,7 +142,7 @@ jobs:
           SRC_DIR=$(echo ${PKG}-*)
           cd "$SRC_DIR"
 
-          # Basisversion aus changelog der trixie/unstable-Quelle (ohne ~bpo*)
+          # Base version from changelog (strip any existing ~bpo*)
           BASE_VER=$(dpkg-parsechangelog -S Version | sed -E 's/~bpo(11|12)\+[0-9]+$//')
 
           case "${{ matrix.suite }}" in
@@ -154,7 +151,7 @@ jobs:
             *) echo "Unsupported suite"; exit 1;;
           esac
 
-          # Höchsten X aus Tags backport/<suite>/<BASE_VER>/<X> ermitteln
+          # Highest X from tags backport/<suite>/<BASE_VER>/<X>
           EXISTING=$(git tag -l "backport/${SUITE_TAG}/${BASE_VER}/*" | sed -E 's#.*/([0-9]+)$#\1#' | sort -n | tail -n1)
           if [ -z "$EXISTING" ]; then
             NEXT=1
@@ -165,11 +162,12 @@ jobs:
           NEW_VER="${BASE_VER}${BPO}${NEXT}"
           echo "Using backport version: ${NEW_VER}"
 
-          # Changelog setzen
-          dch -b --newversion "${NEW_VER}" --distribution "${{ matrix.suite }}" \
+          # Set changelog (fully noninteractive)
+          dch -b --force-bad-version --no-auto-nmu \
+              --newversion "${NEW_VER}" --distribution "${{ matrix.suite }}" \
               "Automated backport to ${{ matrix.suite }} (CI bump to ${NEW_VER})."
 
-          # Optional: Python-Bindings deaktivieren
+          # Optionally disable Python bindings
           if [ "${PYBIND}" = "off" ]; then
             echo 'export DEB_CMAKE_EXTRA_FLAGS += -DZXING_BUILD_PYTHON=OFF' >> debian/rules
             dch -a "CI: disable Python bindings for ${{ matrix.suite }} build."
@@ -183,39 +181,25 @@ jobs:
           cd "$SRC_DIR"
           dpkg-buildpackage -S -us -uc -d
 
-      - name: sbuild (unshare mode; directory rootfs)
+      - name: sbuild (schroot; use named chroot)
         env:
           SUITE: ${{ matrix.suite }}
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-
-          # Find our .dsc (prefer ~bpo*, else fallback)
+          # Prefer ~bpo dsc, else fallback
           DSC=(./${PKG}_*~bpo*.dsc)
           if [ ${#DSC[@]} -eq 0 ]; then
             DSC=(./${PKG}_*.dsc)
           fi
           echo "Using DSC: ${DSC[0]}"
 
-          TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.xz"
-          ROOTDIR="/var/lib/sbuild/roots/${SUITE}-${ARCH}"
-
-          # Fresh extract to a directory rootfs
-          sudo rm -rf "$ROOTDIR"
-          sudo mkdir -p "$ROOTDIR"
-          sudo tar -xJf "$TARBALL" -C "$ROOTDIR"
-
-          # Ensure sbuild group can traverse and read
-          sudo chown -R root:sbuild "$ROOTDIR"
-          sudo chmod -R a+rX "$ROOTDIR"
-
-          # Run sbuild without schroot: chroot-mode=unshare
+          CHROOT_NAME="${SUITE}-${ARCH}-sbuild"   # e.g. bullseye-amd64-sbuild
           sg sbuild -c "sbuild \
             --arch='${ARCH}' \
             --dist='${SUITE}' \
-            --chroot-mode=unshare \
-            --chroot='${ROOTDIR}' \
+            --chroot='${CHROOT_NAME}' \
             '${DSC[0]}'"
 
       - name: Import GPG key (optional)
@@ -340,7 +324,6 @@ jobs:
 
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
-            for suite in bullseye and bookworm; do :; done # keep shellcheck quiet
             for suite in bullseye bookworm; do
               SNAP_SUITE="${suite}-${TAG}"
               if ! grep -q "Codename: ${SNAP_SUITE}" "$REPO/conf/distributions"; then
@@ -360,7 +343,6 @@ jobs:
           fi
 
           mkdir -p "$REPO/keys"
-          # Key nur exportieren, wenn vorhanden – sonst still weitermachen
           if gpg --batch --list-keys >/dev/null 2>&1; then
             gpg --batch --export -a > "$REPO/keys/repo.asc" || true
           fi
@@ -411,7 +393,7 @@ jobs:
           find dist -type f -name "*.buildinfo" -exec cp -v {} out/ \;
           find dist -type f -name "*.dsc" -exec cp -v {} out/ \;
           find dist -type f -name "*.tar.*" -exec cp -v {} out/ \;
-          # APT-Repo-Tarball + Key
+          # APT repo tarball + key
           if [ -f dist/apt-repo/repo.tar.gz ]; then
             cp -v dist/apt-repo/repo.tar.gz out/
           fi
