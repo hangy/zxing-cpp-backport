@@ -86,6 +86,7 @@ jobs:
           # Tarball erzeugen (mmdebstrap wird automatisch genutzt, wenn installiert)
           sudo sbuild-createchroot \
             --debootstrap=mmdebstrap \
+            --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
             --include=eatmydata,ccache,qemu-user-static \
             --arch="$ARCH" \
             --make-sbuild-tarball="$TARBALL" \
