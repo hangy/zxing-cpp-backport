@@ -63,7 +63,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ubuntu-keyring debian-archive-keyring devscripts equivs git ca-certificates \
+            ubuntu-keyring debian-archive-keyring devscripts equivs git ca-certificates dh-python \
             sbuild mmdebstrap debhelper dpkg-dev fakeroot eatmydata quilt \
             gnupg dput reprepro \
             qemu-user-static binfmt-support \
