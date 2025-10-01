@@ -85,6 +85,7 @@ jobs:
           TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.zst"
           # Tarball erzeugen (mmdebstrap wird automatisch genutzt, wenn installiert)
           sudo sbuild-createchroot \
+            --debootstrap=mmdebstrap \
             --include=eatmydata,ccache,qemu-user-static \
             --arch="$ARCH" \
             --make-sbuild-tarball="$TARBALL" \
