@@ -183,24 +183,39 @@ jobs:
           cd "$SRC_DIR"
           dpkg-buildpackage -S -us -uc -d
 
-      - name: sbuild (schroot mode; use named chroot)
+      - name: sbuild (unshare mode; directory rootfs)
         env:
           SUITE: ${{ matrix.suite }}
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           shopt -s nullglob
+
+          # Find our .dsc (prefer ~bpo*, else fallback)
           DSC=(./${PKG}_*~bpo*.dsc)
           if [ ${#DSC[@]} -eq 0 ]; then
             DSC=(./${PKG}_*.dsc)
           fi
           echo "Using DSC: ${DSC[0]}"
 
-          CHROOT_NAME="${SUITE}-${ARCH}-sbuild"   # e.g. bullseye-amd64-sbuild
+          TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.xz"
+          ROOTDIR="/var/lib/sbuild/roots/${SUITE}-${ARCH}"
+
+          # Fresh extract to a directory rootfs
+          sudo rm -rf "$ROOTDIR"
+          sudo mkdir -p "$ROOTDIR"
+          sudo tar -xJf "$TARBALL" -C "$ROOTDIR"
+
+          # Ensure sbuild group can traverse and read
+          sudo chown -R root:sbuild "$ROOTDIR"
+          sudo chmod -R a+rX "$ROOTDIR"
+
+          # Run sbuild without schroot: chroot-mode=unshare
           sg sbuild -c "sbuild \
             --arch='${ARCH}' \
             --dist='${SUITE}' \
-            --chroot='${CHROOT_NAME}' \
+            --chroot-mode=unshare \
+            --chroot='${ROOTDIR}' \
             '${DSC[0]}'"
 
       - name: Import GPG key (optional)
@@ -325,6 +340,7 @@ jobs:
 
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
+            for suite in bullseye and bookworm; do :; done # keep shellcheck quiet
             for suite in bullseye bookworm; do
               SNAP_SUITE="${suite}-${TAG}"
               if ! grep -q "Codename: ${SNAP_SUITE}" "$REPO/conf/distributions"; then
