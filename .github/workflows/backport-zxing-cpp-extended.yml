@@ -66,7 +66,7 @@ jobs:
             sbuild mmdebstrap debhelper dpkg-dev fakeroot eatmydata quilt \
             gnupg dput reprepro \
             qemu-user-static binfmt-support \
-            schroot zstd
+            schroot zstd arch-test
 
       - name: Prepare sbuild user & dirs
         run: |
