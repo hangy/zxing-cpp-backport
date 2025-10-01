@@ -74,14 +74,20 @@ jobs:
           sudo mkdir -p /var/lib/sbuild
           sudo chown -R sbuild:sbuild /var/lib/sbuild
 
-      - name: Create chroot (mmdebstrap + unshare)
+      - name: Create chroot tarball (mmdebstrap + unshare)
         env:
           SUITE: ${{ matrix.suite }}
           ARCH: ${{ matrix.arch }}
         run: |
-          sudo sbuild-createchroot --include=eatmydata,ccache,qemu-user-static \
-            --arch="$ARCH" --chroot-mode=unshare \
-            "$SUITE" "/var/lib/sbuild/${SUITE}-${ARCH}" http://deb.debian.org/debian
+          sudo mkdir -p /var/lib/sbuild
+          # Tarball-Pfad definieren
+          TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.zst"
+          # Tarball erzeugen (mmdebstrap wird automatisch genutzt, wenn installiert)
+          sudo sbuild-createchroot \
+            --include=eatmydata,ccache,qemu-user-static \
+            --arch="$ARCH" \
+            --make-sbuild-tarball="$TARBALL" \
+            "$SUITE" http://deb.debian.org/debian
 
       - name: Fetch source from ${{ env.FROM_SUITE }}
         run: |
@@ -145,7 +151,13 @@ jobs:
           if [ ! -e "${DSC[0]}" ]; then
             DSC=(./${PKG}_*.dsc)
           fi
-          sbuild --arch="${ARCH}" --dist="${SUITE}" --chroot-mode=unshare "${DSC[0]}"
+          TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.zst"
+          sbuild \
+            --arch="${ARCH}" \
+            --dist="${SUITE}" \
+            --chroot-mode=unshare \
+            --chroot-tarball="${TARBALL}" \
+            "${DSC[0]}"
 
       - name: Import GPG key (optional)
         env:
