@@ -32,10 +32,9 @@ permissions:
 
 env:
   PKG: zxing-cpp
-  # Coerce workflow_dispatch inputs to predictable strings; provide defaults for push events
-  FROM_SUITE: ${{ (github.event_name == 'workflow_dispatch' && inputs.from_suite) || 'trixie' }}
-  PYBIND: ${{ (github.event_name == 'workflow_dispatch' && inputs.python_bindings) || 'on' }}
-  SIGN_RELEASE: ${{ (github.event_name == 'workflow_dispatch' && inputs.sign_release) || 'yes' }}
+  FROM_SUITE: "${{ github.event_name == 'workflow_dispatch' && inputs.from_suite || 'trixie' }}"
+  PYBIND:     "${{ github.event_name == 'workflow_dispatch' && inputs.python_bindings || 'on' }}"
+  SIGN_RELEASE: "${{ github.event_name == 'workflow_dispatch' && inputs.sign_release || 'yes' }}"
 
 jobs:
   build:
@@ -72,7 +71,7 @@ jobs:
             gnupg dput reprepro \
             qemu-user-static binfmt-support \
             schroot zstd arch-test xz-utils \
-            libdistro-info-perl
+            libdistro-info-perl debootstrap
 
       - name: Prepare sbuild user & dirs
         run: |
@@ -81,26 +80,24 @@ jobs:
           sudo mkdir -p /var/lib/sbuild
           sudo chown -R sbuild:sbuild /var/lib/sbuild
 
-      - name: Create chroot tarball (debootstrap via sbuild-createchroot)
+      - name: Create schroot for sbuild
         env:
           SUITE: ${{ matrix.suite }}
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          # Ensure dir exists and is traversable by the runner for later checks
-          sudo install -d -m 0755 -o root -g sbuild /var/lib/sbuild
-          TARBALL="/var/lib/sbuild/${SUITE}-${ARCH}.tar.xz"
+          CHROOT_NAME="${SUITE}-${ARCH}-sbuild"
+          CHROOT_DIR="/srv/chroot/${CHROOT_NAME}"
 
-          # Use classic debootstrap (avoids Signed-By conflicts inside chroot)
+          # Create the directory-based schroot and register it
           sudo sbuild-createchroot \
-            --arch="$ARCH" \
-            --make-sbuild-tarball="$TARBALL" \
-            "$SUITE" http://deb.debian.org/debian
+            --arch="${ARCH}" \
+            --chroot-name="${CHROOT_NAME}" \
+            --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
+            "${SUITE}" "${CHROOT_DIR}" http://deb.debian.org/debian
 
-          # Verify as root, then relax file perms for the runner
-          sudo test -s "$TARBALL" || { echo "ERROR: $TARBALL not found or empty"; sudo ls -l /var/lib/sbuild || true; exit 1; }
-          sudo chown "$USER:$USER" "$TARBALL"
-          sudo chmod 0644 "$TARBALL"
+          # Let the runner user access schroot/sbuild
+          sudo adduser $USER sbuild || true
 
       - name: Fetch source from ${{ env.FROM_SUITE }}
         run: |
@@ -184,18 +181,16 @@ jobs:
       - name: sbuild (schroot; use named chroot)
         env:
           SUITE: ${{ matrix.suite }}
-          ARCH: ${{ matrix.arch }}
+          ARCH:  ${{ matrix.arch }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          # Prefer ~bpo dsc, else fallback
           DSC=(./${PKG}_*~bpo*.dsc)
           if [ ${#DSC[@]} -eq 0 ]; then
             DSC=(./${PKG}_*.dsc)
           fi
           echo "Using DSC: ${DSC[0]}"
-
-          CHROOT_NAME="${SUITE}-${ARCH}-sbuild"   # e.g. bullseye-amd64-sbuild
+          CHROOT_NAME="${SUITE}-${ARCH}-sbuild"
           sg sbuild -c "sbuild \
             --arch='${ARCH}' \
             --dist='${SUITE}' \
