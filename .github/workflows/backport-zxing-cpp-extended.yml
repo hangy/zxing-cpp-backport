@@ -185,25 +185,35 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           
+          # Pick the .dsc
           DSC=(./${PKG}_*~bpo*.dsc)
           if [ ${#DSC[@]} -eq 0 ]; then
             DSC=(./${PKG}_*.dsc)
           fi
           echo "Using DSC: ${DSC[0]}"
           
+          # Always pass an absolute path to sbuild to avoid cwd confusion
+          DSC_PATH="$(readlink -f "${DSC[0]}")"
+          
+          # Pass needed vars to the sg subshell
+          export ARCH SUITE DSC_PATH
+          
+          # Run everything inside the sbuild group as a bash script
+          sg sbuild -c 'bash -s' <<'BASH'
+          set -euo pipefail
+          
+          : "${ARCH:?}"; : "${SUITE:?}"; : "${DSC_PATH:?}"
+          
           CHROOT_NAME="${SUITE}-${ARCH}-sbuild"
+          ARGS=( --arch="$ARCH" --dist="$SUITE" --chroot="$CHROOT_NAME" )
           
-          # Build the sbuild command as an array
-          CMD=( sbuild
-            --arch="${ARCH}"
-            --dist="${SUITE}"
-            --chroot="${CHROOT_NAME}"
-          )
-          
-          if [ "${SUITE}" = "bullseye" ]; then
-            CMD+=( --chroot-setup-commands
-          "bash -euc 'install -d -m 0755 /etc/apt/sources.list.d
-          cat > /etc/apt/sources.list.d/bullseye-backports.sources <<\"SRC\"
+          if [ "$SUITE" = "bullseye" ]; then
+            # Add bullseye-backports as Deb822 + a conservative pin inside the chroot
+            # Use the generic keyring that exists in bullseye: /usr/share/keyrings/debian-archive-keyring.gpg
+            ARGS+=(
+              --chroot-setup-commands=$'bash -euc \'
+          install -d -m 0755 /etc/apt/sources.list.d
+          cat > /etc/apt/sources.list.d/bullseye-backports.sources <<"SRC"
           Types: deb
           URIs: http://deb.debian.org/debian
           Suites: bullseye-backports
@@ -211,25 +221,22 @@ jobs:
           Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
           SRC
           
-          cat > /etc/apt/preferences.d/99-backports <<\"PIN\"
+          cat > /etc/apt/preferences.d/99-backports <<"PIN"
           Package: *
           Pin: release n=bullseye-backports
           Pin-Priority: 100
           PIN
           
-          apt-get update'"
+          apt-get update
+          \''
             )
           fi
           
-          # Add the .dsc as the final argument
-          CMD+=( "${DSC[0]}" )
+          ARGS+=( "$DSC_PATH" )
           
-          # Log the exact command (optional)
-          CMD_STR=$(printf '%q ' "${CMD[@]}"); CMD_STR=${CMD_STR% }  # trim trailing space
-          echo "RUN: $CMD_STR"
-          
-          # Execute through the sbuild group
-          sg sbuild -c "bash -lc $CMD_STR"
+          printf 'RUN (sg): sbuild %q\n' "${ARGS[@]}"
+          sbuild "${ARGS[@]}"
+          BASH
 
       - name: Import GPG key (optional)
         env:
