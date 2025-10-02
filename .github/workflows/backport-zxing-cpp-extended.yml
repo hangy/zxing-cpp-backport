@@ -62,176 +62,72 @@ jobs:
         with:
           platforms: arm64
 
-      - name: Install host prereqs
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            debootstrap \
-            ubuntu-keyring debian-archive-keyring devscripts equivs git ca-certificates dh-python \
-            sbuild debhelper dpkg-dev fakeroot eatmydata quilt \
-            gnupg dput reprepro \
-            qemu-user-static binfmt-support \
-            schroot zstd arch-test xz-utils \
-            libdistro-info-perl debootstrap
-
-      - name: Prepare sbuild user & dirs
-        run: |
-          sudo adduser --quiet --disabled-password --gecos '' sbuild || true
-          sudo adduser $USER sbuild || true
-          sudo mkdir -p /var/lib/sbuild
-          sudo chown -R sbuild:sbuild /var/lib/sbuild
-
-      - name: Create schroot for sbuild
-        env:
-          SUITE: ${{ matrix.suite }}
-          ARCH: ${{ matrix.arch }}
+      - name: Build in Salsa CI image
         run: |
           set -euo pipefail
-          CHROOT_NAME="${SUITE}-${ARCH}-sbuild"
-          CHROOT_DIR="/srv/chroot/${CHROOT_NAME}"
+          suite="${{ matrix.suite }}"
+          arch="${{ matrix.arch }}"
 
-          sudo sbuild-createchroot \
-            --arch="${ARCH}" \
-            --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
-            "${SUITE}" "${CHROOT_DIR}" http://deb.debian.org/debian
-
-          # Add current user to sbuild group
-          sudo adduser $USER sbuild || true
-
-      - name: Fetch source from ${{ env.FROM_SUITE }}
-        run: |
-          set -e
-          # Ensure keyrings are present on the Ubuntu host
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends debian-archive-keyring
-
-          # Create a Deb822 sources file with explicit Signed-By keyrings
-          KR_CURRENT=/usr/share/keyrings/debian-archive-keyring.gpg
-          case "${FROM_SUITE}" in
-            bullseye) KR_STABLE=/usr/share/keyrings/debian-archive-bullseye-stable.gpg ;;
-            bookworm) KR_STABLE=/usr/share/keyrings/debian-archive-bookworm-stable.gpg ;;
-            trixie|unstable) KR_STABLE="$KR_CURRENT" ;;  # trixie/testing uses current set
-            *) KR_STABLE="$KR_CURRENT" ;;
-          esac
-          KR_REMOVED=/usr/share/keyrings/debian-archive-removed-keys.gpg
-
-          sudo tee /etc/apt/sources.list.d/debian.sources > /dev/null <<EOF
-          Types: deb-src
-          URIs: http://deb.debian.org/debian
-          Suites: ${FROM_SUITE}
-          Components: main
-          Signed-By: ${KR_CURRENT} ${KR_STABLE} ${KR_REMOVED}
-          EOF
-
-          # Update and fetch the source *without* switching the host to Debian
-          sudo apt-get update
-          apt source -t "${FROM_SUITE}" "${PKG}"
-
-          # Clean up the temporary Debian source entry (optional but nice)
-          sudo rm -f /etc/apt/sources.list.d/debian.sources
-          sudo apt-get update
-
-      - name: Apply backport version (auto-increment) & toggles
-        shell: bash
-        run: |
-          set -e
-          SRC_DIR=$(echo ${PKG}-*)
-          cd "$SRC_DIR"
-
-          # Base version from changelog (strip any existing ~bpo*)
-          BASE_VER=$(dpkg-parsechangelog -S Version | sed -E 's/~bpo(11|12)\+[0-9]+$//')
-
-          case "${{ matrix.suite }}" in
-            bullseye) BPO="${BPO11}"; SUITE_TAG="bullseye";;
-            bookworm) BPO="${BPO12}"; SUITE_TAG="bookworm";;
-            *) echo "Unsupported suite"; exit 1;;
-          esac
-
-          # Highest X from tags backport/<suite>/<BASE_VER>/<X>
-          EXISTING=$(git tag -l "backport/${SUITE_TAG}/${BASE_VER}/*" | sed -E 's#.*/([0-9]+)$#\1#' | sort -n | tail -n1)
-          if [ -z "$EXISTING" ]; then
-            NEXT=1
-          else
-            NEXT=$((EXISTING + 1))
-          fi
-
-          NEW_VER="${BASE_VER}${BPO}${NEXT}"
-          echo "Using backport version: ${NEW_VER}"
-
-          # Set changelog (fully noninteractive)
-          dch -b --force-bad-version --no-auto-nmu \
-              --newversion "${NEW_VER}" --distribution "${{ matrix.suite }}" \
-              "Automated backport to ${{ matrix.suite }} (CI bump to ${NEW_VER})."
-
-          # Optionally disable Python bindings
-          if [ "${PYBIND}" = "off" ]; then
-            echo 'export DEB_CMAKE_EXTRA_FLAGS += -DZXING_BUILD_PYTHON=OFF' >> debian/rules
-            dch -a "CI: disable Python bindings for ${{ matrix.suite }} build."
-          fi
-
-          debian/rules clean || true
-
-      - name: Build source package (.dsc)
-        run: |
-          SRC_DIR=$(echo ${PKG}-*)
-          cd "$SRC_DIR"
-          dpkg-buildpackage -S -us -uc -d
-
-      - name: sbuild (schroot; use named chroot)
-        env:
-          SUITE: ${{ matrix.suite }}
-          ARCH:  ${{ matrix.arch }}
-        run: |
-          set -euo pipefail
+          # Find the .dsc we want to build and turn it into an absolute path
           shopt -s nullglob
-          
-          # Pick the .dsc
-          DSC=(./${PKG}_*~bpo*.dsc)
-          if [ ${#DSC[@]} -eq 0 ]; then
-            DSC=(./${PKG}_*.dsc)
-          fi
-          echo "Using DSC: ${DSC[0]}"
-          
-          # Always pass an absolute path to sbuild to avoid cwd confusion
-          DSC_PATH="$(readlink -f "${DSC[0]}")"
-          
-          # Pass needed vars to the sg subshell
-          export ARCH SUITE DSC_PATH
-          
-          # Run everything inside the sbuild group as a bash script
-          sg sbuild -c 'bash -s' <<'BASH'
-          set -euo pipefail
-          
-          : "${ARCH:?}"; : "${SUITE:?}"; : "${DSC_PATH:?}"
-          
-          CHROOT_NAME="${SUITE}-${ARCH}-sbuild"
-          ARGS=( --arch="$ARCH" --dist="$SUITE" --chroot="$CHROOT_NAME" )
-          
-          if [ "$SUITE" = "bullseye" ]; then
-            ARGS+=(
-              --chroot-setup-commands
-              "bash -euc 'set -e;
-                install -d -m 0755 /etc/apt/sources.list.d /etc/apt/preferences.d;
-                f=/etc/apt/sources.list.d/bullseye-backports.sources;
-                { echo Types: deb;
-                  echo URIs: http://deb.debian.org/debian;
-                  echo Suites: bullseye-backports;
-                  echo Components: main;
-                  if [ -f /usr/share/keyrings/debian-archive-keyring.gpg ]; then
-                    echo Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg;
-                  fi;
-                } > \"\$f\";
-                printf \"%s\n\" \"Package: *\" \"Pin: release n=bullseye-backports\" \"Pin-Priority: 100\" \
-                  > /etc/apt/preferences.d/99-backports;
-                apt-get update || { echo "APT UPDATE FAILED"; ls -l /usr/share/keyrings || true; cat /etc/apt/sources.list.d/bullseye-backports.sources || true; exit 1; }'"
-            )
-          fi
-          
-          ARGS+=( "$DSC_PATH" )
-          
-          printf 'RUN (sg): sbuild %q\n' "${ARGS[@]}"
-          sbuild "${ARGS[@]}"
-          BASH
+          DSC=(./zxing-cpp_*~bpo*.dsc)
+          if [ ${#DSC[@]} -eq 0 ]; then DSC=(./zxing-cpp_*.dsc); fi
+          test ${#DSC[@]} -ge 1
+          dsc="$(readlink -f "${DSC[0]}")"
+          echo "Using DSC: $dsc"
+
+          # Use the Salsa CI pipeline image. Tag per suite.
+          # Common tags: :bullseye, :bookworm. They are amd64 images.
+          # For arm64, enable qemu (done above).
+          img="registry.salsa.debian.org/salsa-ci-team/pipeline:${suite}"
+
+          # Run sbuild in "unshare" mode inside the container (no systemd/schroot needed)
+          # Create a throwaway chroot dir and keep Docker ephemeral.
+          docker run --rm --privileged \
+            -v "$dsc:$dsc:ro" \
+            -v "$(pwd):/work" \
+            -w /work \
+            "$img" \
+            bash -euc '
+              set -e
+              apt-get update
+              # Ensure we have tools regardless of exact image contents
+              apt-get install -y --no-install-recommends sbuild mmdebstrap devscripts ca-certificates
+
+              suite='"$suite"'
+              arch='"$arch"'
+              chroot="/srv/chroot/${suite}-${arch}-unshare"
+
+              # Create minimal chroot with mmdebstrap
+              mmdebstrap --architectures="$arch" "$suite" "$chroot" http://deb.debian.org/debian
+
+              # Enable backports for bullseye only (Deb822, no heredocs)
+              if [ "$suite" = "bullseye" ]; then
+                mkdir -p "$chroot/etc/apt/sources.list.d" "$chroot/etc/apt/preferences.d"
+                f="$chroot/etc/apt/sources.list.d/bullseye-backports.sources"
+                {
+                  echo "Types: deb"
+                  echo "URIs: http://deb.debian.org/debian"
+                  echo "Suites: bullseye-backports"
+                  echo "Components: main"
+                  # Signed-By is optional for official mirrors in bullseye (trusted keyring is present)
+                } > "$f"
+                printf "%s\n" \
+                  "Package: *" \
+                  "Pin: release n=bullseye-backports" \
+                  "Pin-Priority: 100" > "$chroot/etc/apt/preferences.d/99-backports"
+                chroot "$chroot" apt-get update
+              fi
+
+              # Build using sbuild with unshare backend
+              sbuild \
+                --chroot-mode=unshare \
+                --chroot="$chroot" \
+                --arch="$arch" \
+                --dist="$suite" \
+                --no-clean-source \
+                "'"$dsc"'"
+            '
 
       - name: Import GPG key (optional)
         env:
