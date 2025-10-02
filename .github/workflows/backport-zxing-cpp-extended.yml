@@ -184,43 +184,48 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
+
           DSC=(./${PKG}_*~bpo*.dsc)
           if [ ${#DSC[@]} -eq 0 ]; then
             DSC=(./${PKG}_*.dsc)
           fi
           echo "Using DSC: ${DSC[0]}"
-      
+
           CHROOT_NAME="${SUITE}-${ARCH}-sbuild"
           EXTRA_FLAGS=()
-      
+
           if [ "${SUITE}" = "bullseye" ]; then
             EXTRA_FLAGS+=(
-              "--chroot-setup-commands=bash -euc '
-                install -d -m 0755 /etc/apt/sources.list.d
-                cat > /etc/apt/sources.list.d/bullseye-backports.sources <<\"SRC\"
+              # EITHER this form (next-arg):
+              --chroot-setup-commands
+              "bash -euc 'install -d -m 0755 /etc/apt/sources.list.d
+          cat > /etc/apt/sources.list.d/bullseye-backports.sources <<\"SRC\"
           Types: deb
           URIs: http://deb.debian.org/debian
           Suites: bullseye-backports
           Components: main
-          Signed-By: /usr/share/keyrings/debian-archive-bullseye-stable.gpg
+          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
           SRC
           
-                cat > /etc/apt/preferences.d/99-backports <<\"PIN\"
+          cat > /etc/apt/preferences.d/99-backports <<\"PIN\"
           Package: *
           Pin: release n=bullseye-backports
           Pin-Priority: 100
           PIN
           
-                apt-get update
-              '"
+          apt-get update'"
             )
           fi
-      
+          
+          # (optional) show the command we’re about to run
+          printf 'sbuild %q ' --arch="$ARCH" --dist="$SUITE" --chroot="$CHROOT_NAME" "${EXTRA_FLAGS[@]}" "${DSC[0]}"
+          echo
+          
           sg sbuild -c "sbuild \
             --arch='${ARCH}' \
             --dist='${SUITE}' \
             --chroot='${CHROOT_NAME}' \
-            ${EXTRA_FLAGS[@]} \
+            ${EXTRA_FLAGS:+${EXTRA_FLAGS[@]@Q}} \
             '${DSC[0]}'"
 
       - name: Import GPG key (optional)
