@@ -20,8 +20,8 @@ on:
         default: yes
   push:
     tags:
-      - "v*.*.*"     # Tag-Push triggers Release + Snapshots
-    branches: [ main ]
+      - "v*.*.*"
+    branches: [main]
     paths:
       - "debian/**"
 
@@ -33,7 +33,7 @@ permissions:
 env:
   PKG: zxing-cpp
   FROM_SUITE: "${{ github.event_name == 'workflow_dispatch' && inputs.from_suite || 'trixie' }}"
-  PYBIND:     "${{ github.event_name == 'workflow_dispatch' && inputs.python_bindings || 'on' }}"
+  PYBIND: "${{ github.event_name == 'workflow_dispatch' && inputs.python_bindings || 'on' }}"
   SIGN_RELEASE: "${{ github.event_name == 'workflow_dispatch' && inputs.sign_release || 'yes' }}"
 
 jobs:
@@ -47,7 +47,6 @@ jobs:
     env:
       BPO11: "~bpo11+"
       BPO12: "~bpo12+"
-      # Provide maintainer identity for dch to avoid prompts
       DEBFULLNAME: CI Backporter
       DEBEMAIL: ${{ github.actor }}@users.noreply.github.com
     steps:
@@ -57,91 +56,146 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Setup QEMU for cross-arch
+      # Needed only for arm64 builds on amd64 runners
+      - name: Enable QEMU for arm64
+        if: matrix.arch == 'arm64'
         uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
 
-      - name: Build in Salsa CI image
+      - name: Build inside Salsa CI image
+        env:
+          SUITE: ${{ matrix.suite }}
+          ARCH: ${{ matrix.arch }}
+          FROM_SUITE: ${{ env.FROM_SUITE }}
+          PKG: ${{ env.PKG }}
+          PYBIND: ${{ env.PYBIND }}
+          BPO11: ${{ env.BPO11 }}
+          BPO12: ${{ env.BPO12 }}
+          DEBFULLNAME: ${{ env.DEBFULLNAME }}
+          DEBEMAIL: ${{ env.DEBEMAIL }}
         run: |
           set -euo pipefail
-          suite="${{ matrix.suite }}"
-          arch="${{ matrix.arch }}"
 
-          # Find the .dsc we want to build and turn it into an absolute path
-          shopt -s nullglob
-          DSC=(./zxing-cpp_*~bpo*.dsc)
-          if [ ${#DSC[@]} -eq 0 ]; then DSC=(./zxing-cpp_*.dsc); fi
-          test ${#DSC[@]} -ge 1
-          dsc="$(readlink -f "${DSC[0]}")"
-          echo "Using DSC: $dsc"
+          # Use suite-tagged Salsa image (amd64). QEMU on host lets us run arm64 chroot payload.
+          IMG="registry.salsa.debian.org/salsa-ci-team/pipeline:${SUITE}"
 
-          # Use the Salsa CI pipeline image. Tag per suite.
-          # Common tags: :bullseye, :bookworm. They are amd64 images.
-          # For arm64, enable qemu (done above).
-          img="registry.salsa.debian.org/salsa-ci-team/pipeline:${suite}"
-
-          # Run sbuild in "unshare" mode inside the container (no systemd/schroot needed)
-          # Create a throwaway chroot dir and keep Docker ephemeral.
+          # Run everything in one privileged container so host stays clean.
           docker run --rm --privileged \
-            -v "$dsc:$dsc:ro" \
-            -v "$(pwd):/work" \
-            -w /work \
-            "$img" \
-            bash -euc '
-              set -e
+            -e SUITE -e ARCH -e FROM_SUITE -e PKG -e PYBIND -e BPO11 -e BPO12 \
+            -e DEBFULLNAME -e DEBEMAIL \
+            -v "$(pwd):/work" -w /work \
+            "$IMG" bash -euc '
+              set -euo pipefail
+
               apt-get update
-              # Ensure we have tools regardless of exact image contents
-              apt-get install -y --no-install-recommends sbuild mmdebstrap devscripts ca-certificates
+              # Ensure required tools regardless of exact image content
+              apt-get install -y --no-install-recommends \
+                git devscripts ca-certificates gnupg \
+                sbuild mmdebstrap apt-transport-https
 
-              suite='"$suite"'
-              arch='"$arch"'
-              chroot="/srv/chroot/${suite}-${arch}-unshare"
+              # 1) Add Debian source for FROM_SUITE (Deb822), fetch upstream source
+              mkdir -p /etc/apt/sources.list.d
+              cat > /etc/apt/sources.list.d/debian.sources <<EOF
+              Types: deb-src
+              URIs: http://deb.debian.org/debian
+              Suites: ${FROM_SUITE}
+              Components: main
+              EOF
+              apt-get update
+              apt source -t "${FROM_SUITE}" "${PKG}"
 
-              # Create minimal chroot with mmdebstrap
-              mmdebstrap --architectures="$arch" "$suite" "$chroot" http://deb.debian.org/debian
+              # 2) Enter extracted source tree
+              SRC_DIR="$(echo ${PKG}-*)"
+              cd "$SRC_DIR"
 
-              # Enable backports for bullseye only (Deb822, no heredocs)
-              if [ "$suite" = "bullseye" ]; then
-                mkdir -p "$chroot/etc/apt/sources.list.d" "$chroot/etc/apt/preferences.d"
-                f="$chroot/etc/apt/sources.list.d/bullseye-backports.sources"
+              # Base version (strip any existing ~bpo*)
+              BASE_VER="$(dpkg-parsechangelog -S Version | sed -E "s/~bpo(11|12)\+[0-9]+$//")"
+
+              # Backport suffix & suite tag
+              case "${SUITE}" in
+                bullseye) BPO="${BPO11}"; SUITE_TAG="bullseye";;
+                bookworm) BPO="${BPO12}"; SUITE_TAG="bookworm";;
+                *) echo "Unsupported suite: ${SUITE}" >&2; exit 1;;
+              esac
+
+              # Determine next backport counter X from tags backport/<suite>/<BASE_VER>/<X>
+              NEXT=1
+              if git tag -l "backport/${SUITE_TAG}/${BASE_VER}/*" | grep -q .; then
+                X="$(git tag -l "backport/${SUITE_TAG}/${BASE_VER}/*" | sed -E "s#.*/([0-9]+)$#\\1#" | sort -n | tail -n1)"
+                NEXT="$((X + 1))"
+              fi
+
+              NEW_VER="${BASE_VER}${BPO}${NEXT}"
+              echo "Using backport version: ${NEW_VER}"
+
+              # 3) Update changelog; optionally disable Python bindings
+              dch -b --force-bad-version --no-auto-nmu \
+                  --newversion "${NEW_VER}" --distribution "${SUITE}" \
+                  "Automated backport to ${SUITE} (CI bump to ${NEW_VER})."
+
+              if [ "${PYBIND}" = "off" ]; then
+                echo '"'"'export DEB_CMAKE_EXTRA_FLAGS += -DZXING_BUILD_PYTHON=OFF'"'"' >> debian/rules
+                dch -a "CI: disable Python bindings for ${SUITE} build."
+              fi
+
+              debian/rules clean || true
+
+              # 4) Build source package (.dsc)
+              dpkg-buildpackage -S -us -uc -d
+              cd ..
+
+              # 5) Prepare minimal chroot (unshare mode) and enable backports for bullseye
+              CHROOT="/srv/chroot/${SUITE}-${ARCH}-unshare"
+              mmdebstrap --architectures="${ARCH}" "${SUITE}" "${CHROOT}" http://deb.debian.org/debian
+
+              if [ "${SUITE}" = "bullseye" ]; then
+                mkdir -p "${CHROOT}/etc/apt/sources.list.d" "${CHROOT}/etc/apt/preferences.d"
                 {
                   echo "Types: deb"
                   echo "URIs: http://deb.debian.org/debian"
                   echo "Suites: bullseye-backports"
                   echo "Components: main"
-                  # Signed-By is optional for official mirrors in bullseye (trusted keyring is present)
-                } > "$f"
+                } > "${CHROOT}/etc/apt/sources.list.d/bullseye-backports.sources"
                 printf "%s\n" \
                   "Package: *" \
                   "Pin: release n=bullseye-backports" \
-                  "Pin-Priority: 100" > "$chroot/etc/apt/preferences.d/99-backports"
-                chroot "$chroot" apt-get update
+                  "Pin-Priority: 100" > "${CHROOT}/etc/apt/preferences.d/99-backports"
+                chroot "${CHROOT}" apt-get update
               fi
 
-              # Build using sbuild with unshare backend
+              # 6) Find .dsc and run sbuild inside the container (unshare mode)
+              shopt -s nullglob
+              DSC=(./${PKG}_*~bpo*.dsc)
+              if [ ${#DSC[@]} -eq 0 ]; then DSC=(./${PKG}_*.dsc); fi
+              test ${#DSC[@]} -ge 1
+              echo "Using DSC: ${DSC[0]}"
+
               sbuild \
                 --chroot-mode=unshare \
-                --chroot="$chroot" \
-                --arch="$arch" \
-                --dist="$suite" \
+                --chroot="${CHROOT}" \
+                --arch="${ARCH}" \
+                --dist="${SUITE}" \
                 --no-clean-source \
-                "'"$dsc"'"
+                "${DSC[0]}"
             '
 
       - name: Import GPG key (optional)
         env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           SIGN_RELEASE: ${{ env.SIGN_RELEASE }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
           if [ "$SIGN_RELEASE" != "yes" ] || [ -z "$GPG_PRIVATE_KEY" ]; then
             echo "Signing disabled or no GPG key provided. Skipping import."
             exit 0
           fi
+          set -e
           echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-          echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf
-          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+          mkdir -p ~/.gnupg
+          echo "pinentry-mode loopback"       >> ~/.gnupg/gpg.conf
+          echo "allow-loopback-pinentry"      >> ~/.gnupg/gpg-agent.conf
           gpgconf --reload gpg-agent
+          gpg --list-keys
 
       - name: Debsign artifacts (optional)
         env:
@@ -149,17 +203,22 @@ jobs:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
           GPG_KEYID: ${{ secrets.GPG_KEYID }}
+          PKG: ${{ env.PKG }}
+          ARCH: ${{ matrix.arch }}
         run: |
           if [ "$SIGN_RELEASE" != "yes" ] || [ -z "$GPG_PRIVATE_KEY" ]; then
             echo "Signing disabled or no GPG key provided. Skipping debsign."
             exit 0
           fi
-          set -e
-          CHG=(./${PKG}_*_${{ matrix.arch }}.changes)
+          set -euo pipefail
+          shopt -s nullglob
+          CHG=(./${PKG}_*_${ARCH}.changes)
           DSC=(./${PKG}_*.dsc)
+
+          # Sign .changes and .dsc (re-sign if already present)
           for f in "${CHG[@]}" "${DSC[@]}"; do
             [ -e "$f" ] || continue
-            if [ -n "${GPG_KEYID}" ]; then
+            if [ -n "${GPG_KEYID:-}" ]; then
               debsign -k"${GPG_KEYID}" --re-sign --no-conf \
                 -p"gpg --batch --yes --pinentry-mode loopback --passphrase '${GPG_PASSPHRASE}'" "$f"
             else
@@ -314,19 +373,14 @@ jobs:
       - name: Collect files for release
         run: |
           mkdir out
-          find dist -type f -name "*.deb" -exec cp -v {} out/ \;
-          find dist -type f -name "*.ddeb" -exec cp -v {} out/ \;
-          find dist -type f -name "*.changes" -exec cp -v {} out/ \;
+          find dist -type f -name "*.deb"       -exec cp -v {} out/ \;
+          find dist -type f -name "*.ddeb"      -exec cp -v {} out/ \;
+          find dist -type f -name "*.changes"   -exec cp -v {} out/ \;
           find dist -type f -name "*.buildinfo" -exec cp -v {} out/ \;
-          find dist -type f -name "*.dsc" -exec cp -v {} out/ \;
-          find dist -type f -name "*.tar.*" -exec cp -v {} out/ \;
-          # APT repo tarball + key
-          if [ -f dist/apt-repo/repo.tar.gz ]; then
-            cp -v dist/apt-repo/repo.tar.gz out/
-          fi
-          if [ -f dist/apt-repo/repo/keys/repo.asc ]; then
-            cp -v dist/apt-repo/repo/keys/repo.asc out/
-          fi
+          find dist -type f -name "*.dsc"       -exec cp -v {} out/ \;
+          find dist -type f -name "*.tar.*"     -exec cp -v {} out/ \;
+          if [ -f dist/apt-repo/repo.tar.gz ]; then cp -v dist/apt-repo/repo.tar.gz out/; fi
+          if [ -f dist/apt-repo/repo/keys/repo.asc ]; then cp -v dist/apt-repo/repo/keys/repo.asc out/; fi
 
       - name: Create GitHub Release (draft)
         uses: softprops/action-gh-release@v2
@@ -344,14 +398,14 @@ jobs:
           set -e
           mapfile -t DSCS < <(find dist -type f -name "${PKG}_*.dsc")
           for dsc in "${DSCS[@]}"; do
-            VER=$(basename "$dsc" | sed -E 's/.*_([^_]+)\.dsc/\1/')
+            VER=$(basename "$dsc" | sed -E "s/.*_([^_]+)\.dsc/\1/")
             SUITE_TAG=""
             echo "$VER" | grep -q "~bpo11+" && SUITE_TAG="bullseye"
             echo "$VER" | grep -q "~bpo12+" && SUITE_TAG="bookworm"
             [ -n "$SUITE_TAG" ] || continue
 
-            BASE=$(echo "$VER" | sed -E 's/~bpo(11|12)\+[0-9]+$//')
-            X=$(echo "$VER"   | sed -nE 's/.*~bpo(11|12)\+([0-9]+)$/\2/p')
+            BASE=$(echo "$VER" | sed -E "s/~bpo(11|12)\+[0-9]+$//")
+            X=$(echo "$VER"   | sed -nE "s/.*~bpo(11|12)\+([0-9]+)$/\2/p")
             [ -n "$BASE" ] && [ -n "$X" ] || continue
 
             TAG="backport/${SUITE_TAG}/${BASE}/${X}"
