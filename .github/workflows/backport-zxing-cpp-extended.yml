@@ -63,122 +63,54 @@ jobs:
         with:
           platforms: arm64
 
-      - name: Build inside Salsa CI image
+      - name: sbuild (schroot; use named chroot)
         env:
           SUITE: ${{ matrix.suite }}
-          ARCH: ${{ matrix.arch }}
-          FROM_SUITE: ${{ env.FROM_SUITE }}
-          PKG: ${{ env.PKG }}
-          PYBIND: ${{ env.PYBIND }}
-          BPO11: ${{ env.BPO11 }}
-          BPO12: ${{ env.BPO12 }}
-          DEBFULLNAME: ${{ env.DEBFULLNAME }}
-          DEBEMAIL: ${{ env.DEBEMAIL }}
+          ARCH:  ${{ matrix.arch }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
 
-          # Use suite-tagged Salsa image (amd64). QEMU on host lets us run arm64 chroot payload.
-          IMG="registry.salsa.debian.org/salsa-ci-team/pipeline:${SUITE}"
+          # Pick the .dsc
+          DSC=(./${PKG}_*~bpo*.dsc)
+          if [ ${#DSC[@]} -eq 0 ]; then
+            DSC=(./${PKG}_*.dsc)
+          fi
+          echo "Using DSC: ${DSC[0]}"
 
-          # Run everything in one privileged container so host stays clean.
-          docker run --rm --privileged \
-            -e SUITE -e ARCH -e FROM_SUITE -e PKG -e PYBIND -e BPO11 -e BPO12 \
-            -e DEBFULLNAME -e DEBEMAIL \
-            -v "$(pwd):/work" -w /work \
-            "$IMG" bash -euc '
-              set -euo pipefail
+          DSC_PATH="$(readlink -f "${DSC[0]}")"
+          CHROOT_NAME="${SUITE}-${ARCH}-sbuild"
 
-              apt-get update
-              # Ensure required tools regardless of exact image content
-              apt-get install -y --no-install-recommends \
-                git devscripts ca-certificates gnupg \
-                sbuild mmdebstrap apt-transport-https
+          # Base args
+          ARGS=( --arch="${ARCH}" --dist="${SUITE}" --chroot="${CHROOT_NAME}" )
 
-              # 1) Add Debian source for FROM_SUITE (Deb822), fetch upstream source
-              mkdir -p /etc/apt/sources.list.d
-              cat > /etc/apt/sources.list.d/debian.sources <<EOF
-              Types: deb-src
-              URIs: http://deb.debian.org/debian
-              Suites: ${FROM_SUITE}
-              Components: main
-              EOF
-              apt-get update
-              apt source -t "${FROM_SUITE}" "${PKG}"
+          # Bullseye: add backports inside the chroot (no heredocs)
+          if [ "${SUITE}" = "bullseye" ]; then
+            SETUP=$'set -e
+            install -d -m 0755 /etc/apt/sources.list.d /etc/apt/preferences.d
+            printf "%s\n" \
+              "Types: deb" \
+              "URIs: http://deb.debian.org/debian" \
+              "Suites: bullseye-backports" \
+              "Components: main" \
+              "Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg" \
+              > /etc/apt/sources.list.d/bullseye-backports.sources
+            printf "%s\n" \
+              "Package: *" \
+              "Pin: release n=bullseye-backports" \
+              "Pin-Priority: 100" \
+              > /etc/apt/preferences.d/99-backports
+            apt-get update'
+            # ${SETUP@Q} expands to a single shell-escaped word (no quoting headaches)
+            ARGS+=( --chroot-setup-commands "bash -euc ${SETUP@Q}" )
+          fi
 
-              # 2) Enter extracted source tree
-              SRC_DIR="$(echo ${PKG}-*)"
-              cd "$SRC_DIR"
+          ARGS+=( "${DSC_PATH}" )
 
-              # Base version (strip any existing ~bpo*)
-              BASE_VER="$(dpkg-parsechangelog -S Version | sed -E "s/~bpo(11|12)\+[0-9]+$//")"
-
-              # Backport suffix & suite tag
-              case "${SUITE}" in
-                bullseye) BPO="${BPO11}"; SUITE_TAG="bullseye";;
-                bookworm) BPO="${BPO12}"; SUITE_TAG="bookworm";;
-                *) echo "Unsupported suite: ${SUITE}" >&2; exit 1;;
-              esac
-
-              # Determine next backport counter X from tags backport/<suite>/<BASE_VER>/<X>
-              NEXT=1
-              if git tag -l "backport/${SUITE_TAG}/${BASE_VER}/*" | grep -q .; then
-                X="$(git tag -l "backport/${SUITE_TAG}/${BASE_VER}/*" | sed -E "s#.*/([0-9]+)$#\\1#" | sort -n | tail -n1)"
-                NEXT="$((X + 1))"
-              fi
-
-              NEW_VER="${BASE_VER}${BPO}${NEXT}"
-              echo "Using backport version: ${NEW_VER}"
-
-              # 3) Update changelog; optionally disable Python bindings
-              dch -b --force-bad-version --no-auto-nmu \
-                  --newversion "${NEW_VER}" --distribution "${SUITE}" \
-                  "Automated backport to ${SUITE} (CI bump to ${NEW_VER})."
-
-              if [ "${PYBIND}" = "off" ]; then
-                echo '"'"'export DEB_CMAKE_EXTRA_FLAGS += -DZXING_BUILD_PYTHON=OFF'"'"' >> debian/rules
-                dch -a "CI: disable Python bindings for ${SUITE} build."
-              fi
-
-              debian/rules clean || true
-
-              # 4) Build source package (.dsc)
-              dpkg-buildpackage -S -us -uc -d
-              cd ..
-
-              # 5) Prepare minimal chroot (unshare mode) and enable backports for bullseye
-              CHROOT="/srv/chroot/${SUITE}-${ARCH}-unshare"
-              mmdebstrap --architectures="${ARCH}" "${SUITE}" "${CHROOT}" http://deb.debian.org/debian
-
-              if [ "${SUITE}" = "bullseye" ]; then
-                mkdir -p "${CHROOT}/etc/apt/sources.list.d" "${CHROOT}/etc/apt/preferences.d"
-                {
-                  echo "Types: deb"
-                  echo "URIs: http://deb.debian.org/debian"
-                  echo "Suites: bullseye-backports"
-                  echo "Components: main"
-                } > "${CHROOT}/etc/apt/sources.list.d/bullseye-backports.sources"
-                printf "%s\n" \
-                  "Package: *" \
-                  "Pin: release n=bullseye-backports" \
-                  "Pin-Priority: 100" > "${CHROOT}/etc/apt/preferences.d/99-backports"
-                chroot "${CHROOT}" apt-get update
-              fi
-
-              # 6) Find .dsc and run sbuild inside the container (unshare mode)
-              shopt -s nullglob
-              DSC=(./${PKG}_*~bpo*.dsc)
-              if [ ${#DSC[@]} -eq 0 ]; then DSC=(./${PKG}_*.dsc); fi
-              test ${#DSC[@]} -ge 1
-              echo "Using DSC: ${DSC[0]}"
-
-              sbuild \
-                --chroot-mode=unshare \
-                --chroot="${CHROOT}" \
-                --arch="${ARCH}" \
-                --dist="${SUITE}" \
-                --no-clean-source \
-                "${DSC[0]}"
-            '
+          # Assemble exact command for sg and run
+          CMD="$(printf '%q ' sbuild "${ARGS[@]}")"
+          echo "RUN: ${CMD}"
+          sg sbuild -c "${CMD}"
 
       - name: Import GPG key (optional)
         env:
