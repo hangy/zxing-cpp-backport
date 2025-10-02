@@ -223,7 +223,7 @@ jobs:
                 } > \"\$f\";
                 printf \"%s\n\" \"Package: *\" \"Pin: release n=bullseye-backports\" \"Pin-Priority: 100\" \
                   > /etc/apt/preferences.d/99-backports;
-                apt-get update'"
+                apt-get update || { echo "APT UPDATE FAILED"; ls -l /usr/share/keyrings || true; cat /etc/apt/sources.list.d/bullseye-backports.sources || true; exit 1; }'"
             )
           fi
           
