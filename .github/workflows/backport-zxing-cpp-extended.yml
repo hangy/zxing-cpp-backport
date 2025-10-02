@@ -66,6 +66,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            debootstrap \
             ubuntu-keyring debian-archive-keyring devscripts equivs git ca-certificates dh-python \
             sbuild debhelper dpkg-dev fakeroot eatmydata quilt \
             gnupg dput reprepro \
@@ -188,11 +189,38 @@ jobs:
             DSC=(./${PKG}_*.dsc)
           fi
           echo "Using DSC: ${DSC[0]}"
+      
           CHROOT_NAME="${SUITE}-${ARCH}-sbuild"
+          EXTRA_FLAGS=()
+      
+          if [ "${SUITE}" = "bullseye" ]; then
+            EXTRA_FLAGS+=(
+              "--chroot-setup-commands=bash -euc '
+                install -d -m 0755 /etc/apt/sources.list.d
+                cat > /etc/apt/sources.list.d/bullseye-backports.sources <<\"SRC\"
+          Types: deb
+          URIs: http://deb.debian.org/debian
+          Suites: bullseye-backports
+          Components: main
+          Signed-By: /usr/share/keyrings/debian-archive-bullseye-stable.gpg
+          SRC
+          
+                cat > /etc/apt/preferences.d/99-backports <<\"PIN\"
+          Package: *
+          Pin: release n=bullseye-backports
+          Pin-Priority: 100
+          PIN
+          
+                apt-get update
+              '"
+            )
+          fi
+      
           sg sbuild -c "sbuild \
             --arch='${ARCH}' \
             --dist='${SUITE}' \
             --chroot='${CHROOT_NAME}' \
+            ${EXTRA_FLAGS[@]} \
             '${DSC[0]}'"
 
       - name: Import GPG key (optional)
