@@ -184,21 +184,25 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-
+          
           DSC=(./${PKG}_*~bpo*.dsc)
           if [ ${#DSC[@]} -eq 0 ]; then
             DSC=(./${PKG}_*.dsc)
           fi
           echo "Using DSC: ${DSC[0]}"
-
+          
           CHROOT_NAME="${SUITE}-${ARCH}-sbuild"
-          EXTRA_FLAGS=()
-
+          
+          # Build the sbuild command as an array
+          CMD=( sbuild
+            --arch="${ARCH}"
+            --dist="${SUITE}"
+            --chroot="${CHROOT_NAME}"
+          )
+          
           if [ "${SUITE}" = "bullseye" ]; then
-            EXTRA_FLAGS+=(
-              # EITHER this form (next-arg):
-              --chroot-setup-commands
-              "bash -euc 'install -d -m 0755 /etc/apt/sources.list.d
+            CMD+=( --chroot-setup-commands
+          "bash -euc 'install -d -m 0755 /etc/apt/sources.list.d
           cat > /etc/apt/sources.list.d/bullseye-backports.sources <<\"SRC\"
           Types: deb
           URIs: http://deb.debian.org/debian
@@ -217,16 +221,16 @@ jobs:
             )
           fi
           
-          # (optional) show the command we’re about to run
-          printf 'sbuild %q ' --arch="$ARCH" --dist="$SUITE" --chroot="$CHROOT_NAME" "${EXTRA_FLAGS[@]}" "${DSC[0]}"
+          # Add the .dsc as the final argument
+          CMD+=( "${DSC[0]}" )
+          
+          # Log the exact command (optional)
+          echo -n "RUN: "
+          printf '%q ' "${CMD[@]}"
           echo
           
-          sg sbuild -c "sbuild \
-            --arch='${ARCH}' \
-            --dist='${SUITE}' \
-            --chroot='${CHROOT_NAME}' \
-            ${EXTRA_FLAGS:+${EXTRA_FLAGS[@]@Q}} \
-            '${DSC[0]}'"
+          # Execute through the sbuild group
+          sg sbuild -c "$(printf '%q ' "${CMD[@]}")"
 
       - name: Import GPG key (optional)
         env:
