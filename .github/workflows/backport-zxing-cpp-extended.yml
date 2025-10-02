@@ -208,27 +208,22 @@ jobs:
           ARGS=( --arch="$ARCH" --dist="$SUITE" --chroot="$CHROOT_NAME" )
           
           if [ "$SUITE" = "bullseye" ]; then
-            # Add bullseye-backports as Deb822 + a conservative pin inside the chroot
-            # Use the generic keyring that exists in bullseye: /usr/share/keyrings/debian-archive-keyring.gpg
             ARGS+=(
-              --chroot-setup-commands=$'bash -euc \'
-          install -d -m 0755 /etc/apt/sources.list.d
-          cat > /etc/apt/sources.list.d/bullseye-backports.sources <<"SRC"
-          Types: deb
-          URIs: http://deb.debian.org/debian
-          Suites: bullseye-backports
-          Components: main
-          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
-          SRC
-          
-          cat > /etc/apt/preferences.d/99-backports <<"PIN"
-          Package: *
-          Pin: release n=bullseye-backports
-          Pin-Priority: 100
-          PIN
-          
-          apt-get update
-          \''
+              --chroot-setup-commands
+              "bash -euc 'set -e;
+                install -d -m 0755 /etc/apt/sources.list.d /etc/apt/preferences.d;
+                f=/etc/apt/sources.list.d/bullseye-backports.sources;
+                { echo Types: deb;
+                  echo URIs: http://deb.debian.org/debian;
+                  echo Suites: bullseye-backports;
+                  echo Components: main;
+                  if [ -f /usr/share/keyrings/debian-archive-keyring.gpg ]; then
+                    echo Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg;
+                  fi;
+                } > \"\$f\";
+                printf \"%s\n\" \"Package: *\" \"Pin: release n=bullseye-backports\" \"Pin-Priority: 100\" \
+                  > /etc/apt/preferences.d/99-backports;
+                apt-get update'"
             )
           fi
           
