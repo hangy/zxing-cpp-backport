@@ -225,12 +225,11 @@ jobs:
           CMD+=( "${DSC[0]}" )
           
           # Log the exact command (optional)
-          echo -n "RUN: "
-          printf '%q ' "${CMD[@]}"
-          echo
+          CMD_STR=$(printf '%q ' "${CMD[@]}"); CMD_STR=${CMD_STR% }  # trim trailing space
+          echo "RUN: $CMD_STR"
           
           # Execute through the sbuild group
-          sg sbuild -c "$(printf '%q ' "${CMD[@]}")"
+          sg sbuild -c "bash -lc $CMD_STR"
 
       - name: Import GPG key (optional)
         env:
