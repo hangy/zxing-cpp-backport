@@ -162,6 +162,7 @@ jobs:
             ./*~bpo*.buildinfo
             ./*~bpo*.dsc
             ./*~bpo*.tar.*
+            ./*.orig.tar.*
           if-no-files-found: error
 
   repo:
