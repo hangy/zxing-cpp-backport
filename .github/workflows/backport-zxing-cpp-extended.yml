@@ -190,12 +190,15 @@ jobs:
       - name: Prepare signing key (optional)
         run: |
           set -e
-          wants_sign() { case "${SIGN_RELEASE,,}" in yes|true|on|1) return 0;; *) return 1;; esac; }
+          wants_sign() {
+            val="$(printf '%s' "${SIGN_RELEASE:-}" | tr '[:upper:]' '[:lower:]')"
+            case "$val" in yes|true|on|1) return 0;; *) return 1;; esac
+          }
           if ! wants_sign || [ -z "${GPG_PRIVATE_KEY:-}" ]; then
             echo "Signing disabled or no GPG key provided. Skipping key import."
             exit 0
           fi
-  
+      
           export GNUPGHOME="$HOME/.gnupg"
           install -d -m 700 "$GNUPGHOME"
           {
@@ -205,16 +208,17 @@ jobs:
           } >> "$GNUPGHOME/gpg.conf"
           echo "allow-loopback-pinentry" >> "$GNUPGHOME/gpg-agent.conf"
           gpgconf --reload gpg-agent || true
-  
-          # Import (supports secrets with \n escapes)
+      
+          # Import (supports secrets with \n)
           printf '%b' "$GPG_PRIVATE_KEY" | gpg --batch --yes --import
           gpg --batch --list-secret-keys || true
-  
-          # Warm up agent for non-interactive signing
+      
+          # Warm up agent
           if [ -n "${GPG_PASSPHRASE:-}" ]; then
             echo "warmup" | gpg --batch --yes --pinentry-mode loopback \
               --passphrase "$GPG_PASSPHRASE" -abs > /dev/null
           fi
+
   
       - name: Build APT repository (latest & snapshots)
         shell: bash
