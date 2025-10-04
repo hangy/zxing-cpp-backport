@@ -164,28 +164,31 @@ jobs:
             ./*~bpo*.tar.*
           if-no-files-found: error
 
-  # Your repo / deploy / release jobs can remain as-is.
-  # They will pick up the artifacts produced by the container build above.
   repo:
     needs: build
     runs-on: ubuntu-latest
+    container:
+      image: registry.salsa.debian.org/salsa-ci-team/pipeline/build:latest
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      PKG: zxing-cpp
+      SIGN_RELEASE: ${{ env.SIGN_RELEASE }}
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+      GPG_KEYID: ${{ secrets.GPG_KEYID }}
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: ./dist
   
-      - name: Install reprepro & gpg
+      # The Salsa image already has gnupg; we only add reprepro.
+      - name: Install minimal deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends reprepro gnupg
-
-      - name: Prepare signing key (repo signing)
-        env:
-          SIGN_RELEASE: ${{ env.SIGN_RELEASE }}
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-          GPG_KEYID: ${{ secrets.GPG_KEYID }}
+          apt-get update
+          apt-get install -y --no-install-recommends reprepro ca-certificates
+  
+      - name: Prepare signing key (optional)
         run: |
           set -e
           wants_sign() { case "${SIGN_RELEASE,,}" in yes|true|on|1) return 0;; *) return 1;; esac; }
@@ -193,7 +196,7 @@ jobs:
             echo "Signing disabled or no GPG key provided. Skipping key import."
             exit 0
           fi
-
+  
           export GNUPGHOME="$HOME/.gnupg"
           install -d -m 700 "$GNUPGHOME"
           {
@@ -203,87 +206,61 @@ jobs:
           } >> "$GNUPGHOME/gpg.conf"
           echo "allow-loopback-pinentry" >> "$GNUPGHOME/gpg-agent.conf"
           gpgconf --reload gpg-agent || true
-      
-          # Import the private key; supports secrets that contain '\n'
+  
+          # Import (supports secrets with \n escapes)
           printf '%b' "$GPG_PRIVATE_KEY" | gpg --batch --yes --import
           gpg --batch --list-secret-keys || true
-      
-          # Warm up agent so reprepro/debsign can sign non-interactively
+  
+          # Warm up agent for non-interactive signing
           if [ -n "${GPG_PASSPHRASE:-}" ]; then
             echo "warmup" | gpg --batch --yes --pinentry-mode loopback \
               --passphrase "$GPG_PASSPHRASE" -abs > /dev/null
           fi
-
+  
       - name: Build APT repository (latest & snapshots)
         shell: bash
-        env:
-          PKG: zxing-cpp
-          SIGN_RELEASE: ${{ env.SIGN_RELEASE }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
-          set -euo pipefail
-  
-          # Start from a guaranteed empty repo
+          set -e
           REPO=repo
-          rm -rf "$REPO"
           mkdir -p "$REPO/conf"
+          if gpg --batch --list-keys >/dev/null 2>&1; then
+            SIGN_LINE="SignWith: default"
+            [ -n "${GPG_KEYID:-}" ] && SIGN_LINE="SignWith: ${GPG_KEYID}"
+          else
+            SIGN_LINE=""
+          fi
   
-          # SignWith: yes -> use default private key in GNUPGHOME
-          cat > "$REPO/conf/distributions" <<'EOF'
+          cat > "$REPO/conf/distributions" <<EOF
           Codename: bullseye
           Components: main
           Architectures: amd64 arm64 source
-          SignWith: yes
-          # NotAutomatic: yes
-          # ButAutomaticUpgrades: yes
+          ${SIGN_LINE}
   
           Codename: bookworm
           Components: main
           Architectures: amd64 arm64 source
-          SignWith: yes
-          # NotAutomatic: yes
-          # ButAutomaticUpgrades: yes
+          ${SIGN_LINE}
           EOF
   
           shopt -s nullglob globstar
   
-          # Helper to include while ignoring "olderversion" rejections
-          inc_deb() { reprepro -b "$REPO" --ignore=olderversion includedeb "$1" "$2"; }
-          inc_ddeb(){ reprepro -b "$REPO" --ignore=olderversion includedeb "$1" "$2"; }
-          inc_dsc() { reprepro -b "$REPO" --ignore=olderversion includedsc "$1" "$2"; }
-  
+          # Include per-suite binaries, ddebs (if any) and source
           for suite in bullseye bookworm; do
-            # binaries
             for deb in dist/**/${PKG}_*_*.deb; do
-              case "$deb" in
-                *-${suite}-*) inc_deb "$suite" "$deb" || true ;;
-              esac
+              case "$deb" in *-${suite}-*) reprepro -b "$REPO" includedeb "$suite" "$deb" || true ;; esac
             done
             for ddeb in dist/**/${PKG}_*_*.ddeb; do
-              case "$ddeb" in
-                *-${suite}-*) inc_ddeb "$suite" "$ddeb" || true ;;
-              esac
+              case "$ddeb" in *-${suite}-*) reprepro -b "$REPO" includedeb "$suite" "$ddeb" || true ;; esac
             done
-            # source
             for dsc in dist/**/${PKG}_*.dsc; do
-              case "$dsc" in
-                *-${suite}-*) inc_dsc "$suite" "$dsc" || true ;;
-              esac
+              case "$dsc" in *-${suite}-*) reprepro -b "$REPO" includedsc "$suite" "$dsc" || true ;; esac
             done
           done
   
-          # Export (write & sign Release/InRelease). Do it explicitly.
-          if [ "${SIGN_RELEASE}" = "yes" ]; then
-            reprepro -b "$REPO" export
-          else
-            # If you ever want unsigned indices (not recommended):
-            REPREPRO_NO_SIGN=1 reprepro -b "$REPO" export
-          fi
-  
+          # Export the repo signing pubkey if available
           mkdir -p "$REPO/keys"
-          # Publish the repo’s public key for clients
           if gpg --batch --list-keys >/dev/null 2>&1; then
-            gpg --batch --export -a > "$REPO/keys/repo.asc" || true
+            gpg --batch --export -a ${GPG_KEYID:+$GPG_KEYID} > "$REPO/keys/repo.asc" || true
           fi
   
           tar -C "$REPO" -czf repo.tar.gz .
