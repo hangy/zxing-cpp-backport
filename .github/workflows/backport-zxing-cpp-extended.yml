@@ -174,93 +174,113 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: ./dist
-
+  
       - name: Install reprepro & gpg
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends reprepro gnupg
-
+  
       - name: Prepare signing key (optional)
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          SIGN_RELEASE: ${{ env.SIGN_RELEASE }}
+          GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
+          SIGN_RELEASE:    ${{ env.SIGN_RELEASE }}
         run: |
           if [ "$SIGN_RELEASE" != "yes" ] || [ -z "$GPG_PRIVATE_KEY" ]; then
-            echo "Signing disabled or no GPG key provided. Skipping repo key import."
+            echo "Signing disabled or no GPG key provided. Skipping key import."
             exit 0
           fi
+          set -e
+          export GNUPGHOME="$HOME/.gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          echo "pinentry-mode loopback"       >> "$GNUPGHOME/gpg.conf"
+          echo "allow-loopback-pinentry"      >> "$GNUPGHOME/gpg-agent.conf"
+          echo "no-tty"                       >> "$GNUPGHOME/gpg.conf"
+          gpgconf --reload gpg-agent || true
           echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-          echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf
-          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
-          gpg --list-keys
-
+          gpg --list-secret-keys || true
+  
+          # Prime the agent once so reprepro can sign non-interactively
+          if [ -n "$GPG_PASSPHRASE" ]; then
+            echo "warmup" | gpg --batch --yes --pinentry-mode loopback \
+              --passphrase "$GPG_PASSPHRASE" -abs > /dev/null
+          fi
+  
       - name: Build APT repository (latest & snapshots)
         shell: bash
         env:
           PKG: zxing-cpp
           SIGN_RELEASE: ${{ env.SIGN_RELEASE }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
-          set -e
+          set -euo pipefail
+  
+          # Start from a guaranteed empty repo
           REPO=repo
+          rm -rf "$REPO"
           mkdir -p "$REPO/conf"
+  
+          # SignWith: yes -> use default private key in GNUPGHOME
           cat > "$REPO/conf/distributions" <<'EOF'
           Codename: bullseye
           Components: main
-          Architectures: amd64 source
-          SignWith: default
-
+          Architectures: amd64 arm64 source
+          SignWith: yes
+          # NotAutomatic: yes
+          # ButAutomaticUpgrades: yes
+  
           Codename: bookworm
           Components: main
-          Architectures: amd64 source
-          SignWith: default
+          Architectures: amd64 arm64 source
+          SignWith: yes
+          # NotAutomatic: yes
+          # ButAutomaticUpgrades: yes
           EOF
-
+  
           shopt -s nullglob globstar
+  
+          # Helper to include while ignoring "olderversion" rejections
+          inc_deb() { reprepro -b "$REPO" --ignore=olderversion includedeb "$1" "$2"; }
+          inc_ddeb(){ reprepro -b "$REPO" --ignore=olderversion includedeb "$1" "$2"; }
+          inc_dsc() { reprepro -b "$REPO" --ignore=olderversion includedsc "$1" "$2"; }
+  
           for suite in bullseye bookworm; do
+            # binaries
             for deb in dist/**/${PKG}_*_*.deb; do
               case "$deb" in
-                *-${suite}-*) reprepro -b "$REPO" includedeb "$suite" "$deb" || true ;;
+                *-${suite}-*) inc_deb "$suite" "$deb" || true ;;
               esac
             done
             for ddeb in dist/**/${PKG}_*_*.ddeb; do
               case "$ddeb" in
-                *-${suite}-*) reprepro -b "$REPO" includedeb "$suite" "$ddeb" || true ;;
+                *-${suite}-*) inc_ddeb "$suite" "$ddeb" || true ;;
               esac
             done
+            # source
             for dsc in dist/**/${PKG}_*.dsc; do
               case "$dsc" in
-                *-${suite}-*) reprepro -b "$REPO" includedsc "$suite" "$dsc" || true ;;
+                *-${suite}-*) inc_dsc "$suite" "$dsc" || true ;;
               esac
             done
           done
-
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            for suite in bullseye bookworm; do
-              SNAP_SUITE="${suite}-${TAG}"
-              if ! grep -q "Codename: ${SNAP_SUITE}" "$REPO/conf/distributions"; then
-                cat >> "$REPO/conf/distributions" <<EOF
-                Codename: ${SNAP_SUITE}
-                Components: main
-                Architectures: amd64 source
-                SignWith: default
-                EOF
-              fi
-              reprepro -b "$REPO" createsymlinks
-              for pkg in ${PKG} ${PKG}-tools libzxing3 libzxing-dev python3-zxing-cpp; do
-                reprepro -b "$REPO" copypackages "$SNAP_SUITE" "$suite" "$pkg" || true
-                reprepro -b "$REPO" copysrc      "$SNAP_SUITE" "$suite" "$pkg" || true
-              done
-            done
+  
+          # Export (write & sign Release/InRelease). Do it explicitly.
+          if [ "${SIGN_RELEASE}" = "yes" ]; then
+            reprepro -b "$REPO" export
+          else
+            # If you ever want unsigned indices (not recommended):
+            REPREPRO_NO_SIGN=1 reprepro -b "$REPO" export
           fi
-
+  
           mkdir -p "$REPO/keys"
+          # Publish the repo’s public key for clients
           if gpg --batch --list-keys >/dev/null 2>&1; then
             gpg --batch --export -a > "$REPO/keys/repo.asc" || true
           fi
-
+  
           tar -C "$REPO" -czf repo.tar.gz .
-
+  
       - name: Upload APT repo artifact
         uses: actions/upload-artifact@v4
         with:
@@ -269,7 +289,7 @@ jobs:
             repo/**
             repo.tar.gz
           if-no-files-found: error
-
+  
       - name: Upload repo for Pages
         uses: actions/upload-pages-artifact@v3
         with:
