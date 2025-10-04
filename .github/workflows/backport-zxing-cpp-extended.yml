@@ -172,7 +172,6 @@ jobs:
     env:
       DEBIAN_FRONTEND: noninteractive
       PKG: zxing-cpp
-      SIGN_RELEASE: ${{ env.SIGN_RELEASE }}
       GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
       GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
       GPG_KEYID: ${{ secrets.GPG_KEYID }}
