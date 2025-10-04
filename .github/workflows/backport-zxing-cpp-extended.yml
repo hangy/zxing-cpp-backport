@@ -156,12 +156,12 @@ jobs:
         with:
           name: ${{ env.PKG }}-${{ matrix.suite }}-amd64-${{ github.sha }}
           path: |
-            *.deb
-            *.ddeb
-            *.changes
-            *.buildinfo
-            *.dsc
-            *.tar.*
+            ./*.deb
+            ./*.ddeb
+            ./*~bpo*.changes
+            ./*~bpo*.buildinfo
+            ./*~bpo*.dsc
+            ./*~bpo*.tar.*
           if-no-files-found: error
 
   # Your repo / deploy / release jobs can remain as-is.
