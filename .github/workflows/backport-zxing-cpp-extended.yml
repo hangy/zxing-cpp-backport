@@ -179,34 +179,41 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends reprepro gnupg
-  
-      - name: Prepare signing key (optional)
+
+      - name: Prepare signing key (repo signing)
         env:
+          SIGN_RELEASE: ${{ env.SIGN_RELEASE }}
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
-          SIGN_RELEASE:    ${{ env.SIGN_RELEASE }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GPG_KEYID: ${{ secrets.GPG_KEYID }}
         run: |
-          if [ "$SIGN_RELEASE" != "yes" ] || [ -z "$GPG_PRIVATE_KEY" ]; then
+          set -e
+          wants_sign() { case "${SIGN_RELEASE,,}" in yes|true|on|1) return 0;; *) return 1;; esac; }
+          if ! wants_sign || [ -z "${GPG_PRIVATE_KEY:-}" ]; then
             echo "Signing disabled or no GPG key provided. Skipping key import."
             exit 0
           fi
-          set -e
+
           export GNUPGHOME="$HOME/.gnupg"
-          mkdir -p "$GNUPGHOME"
-          chmod 700 "$GNUPGHOME"
-          echo "pinentry-mode loopback"       >> "$GNUPGHOME/gpg.conf"
-          echo "allow-loopback-pinentry"      >> "$GNUPGHOME/gpg-agent.conf"
-          echo "no-tty"                       >> "$GNUPGHOME/gpg.conf"
+          install -d -m 700 "$GNUPGHOME"
+          {
+            echo "pinentry-mode loopback"
+            echo "no-tty"
+            [ -n "${GPG_KEYID:-}" ] && echo "default-key ${GPG_KEYID}"
+          } >> "$GNUPGHOME/gpg.conf"
+          echo "allow-loopback-pinentry" >> "$GNUPGHOME/gpg-agent.conf"
           gpgconf --reload gpg-agent || true
-          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-          gpg --list-secret-keys || true
-  
-          # Prime the agent once so reprepro can sign non-interactively
-          if [ -n "$GPG_PASSPHRASE" ]; then
+      
+          # Import the private key; supports secrets that contain '\n'
+          printf '%b' "$GPG_PRIVATE_KEY" | gpg --batch --yes --import
+          gpg --batch --list-secret-keys || true
+      
+          # Warm up agent so reprepro/debsign can sign non-interactively
+          if [ -n "${GPG_PASSPHRASE:-}" ]; then
             echo "warmup" | gpg --batch --yes --pinentry-mode loopback \
               --passphrase "$GPG_PASSPHRASE" -abs > /dev/null
           fi
-  
+
       - name: Build APT repository (latest & snapshots)
         shell: bash
         env:
