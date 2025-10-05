@@ -41,7 +41,7 @@ jobs:
     # NOTE: This runs on amd64 only (host arch). Multi-arch would require separate arm64 runners.
     runs-on: ubuntu-latest
     container:
-      image: registry.salsa.debian.org/salsa-ci-team/pipeline/build:latest
+      image: debian:${{ matrix.suite }}-slim
     strategy:
       fail-fast: false
       matrix:
