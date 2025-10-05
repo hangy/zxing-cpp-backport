@@ -148,6 +148,17 @@ jobs:
           apt-get update
           apt-get ${APT_FLAGS} -y --no-install-recommends build-dep .
 
+      - name: Bullseye pybind11 compat fix (bytes from data()+size())
+        if: matrix.suite == 'bullseye'
+        env:
+          PKG: zxing-cpp
+        run: |
+          set -e
+          cd ${PKG}-*
+          # Replace py::bytes(std::string_view) with py::bytes(ptr, len)
+          sed -i 's/py::bytes(res.bytes().asString())/py::bytes(res.bytes().data(), res.bytes().size())/' wrappers\/python\/zxing.cpp
+          dch -a "CI: pybind11 compat for bullseye (avoid bytes(string_view))."
+
       - name: Build
         env:
           PKG: zxing-cpp
