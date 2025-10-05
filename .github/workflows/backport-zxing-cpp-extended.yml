@@ -53,6 +53,7 @@ jobs:
       # maintainer identity for dch
       DEBFULLNAME: CI Backporter
       DEBEMAIL: ${{ github.actor }}@users.noreply.github.com
+      FROM_SUITE: ${{ env.FROM_SUITE }}
     steps:
       - name: Show container info
         run: |
@@ -61,94 +62,91 @@ jobs:
           uname -a
           dpkg -l | grep -E 'debian-archive-keyring|devscripts' || true
 
-      - name: Configure deb-src for ${FROM_SUITE}
+      - name: Configure apt (suite + backports; Deb822)
         env:
-          FROM_SUITE: ${{ env.FROM_SUITE }}
+          SUITE: ${{ matrix.suite }}
         run: |
           set -euo pipefail
-          # Deb822 source for *source* packages from FROM_SUITE (trixie/unstable)
-          install -d -m 0755 /etc/apt/sources.list.d
-          printf '%s\n' \
-            "Types: deb-src" \
-            "URIs: http://deb.debian.org/debian/" \
-            "Suites: ${FROM_SUITE}" \
-            "Components: main" \
-            "Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg" \
-            > /etc/apt/sources.list.d/${FROM_SUITE}.sources
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates debian-archive-keyring gnupg
+          install -d /etc/apt/sources.list.d /etc/apt/preferences.d
+          cat > /etc/apt/sources.list.d/debian.sources <<EOF
+          Types: deb deb-src
+          URIs: http://deb.debian.org/debian
+          Suites: ${SUITE}
+          Components: main
+          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+          Types: deb deb-src
+          URIs: http://deb.debian.org/debian
+          Suites: ${SUITE}-backports
+          Components: main
+          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+          EOF
+
+          # Backports: only if needed (priority 100)
+          cat > /etc/apt/preferences.d/99-backports <<EOF
+          Package: *
+          Pin: release n=${SUITE}-backports
+          Pin-Priority: 100
+          EOF
+
           apt-get update
 
-      - name: Upgrade base & install build helpers
+      - name: Install build helpers
         run: |
           set -e
           export DEBIAN_FRONTEND=noninteractive
           apt-get -y dist-upgrade
           apt-get install -y --no-install-recommends \
-            debian-keyring devscripts equivs fakeroot ca-certificates \
-            git quilt python3-all python3-pip
+            devscripts equivs fakeroot build-essential \
+            dh-python quilt git python3-all
 
-      - name: Fetch ${PKG} source from ${FROM_SUITE}
+      - name: Fetch source from ${{ env.FROM_SUITE }} (just sources)
         env:
+          PKG: zxing-cpp
           FROM_SUITE: ${{ env.FROM_SUITE }}
-          PKG: ${{ env.PKG }}
         run: |
           set -e
-          # Prefer explicit -t <suite> (works the same as pkg/suite)
+          # Temporarily add ${FROM_SUITE} deb-src to pull only the source
+          cat > /etc/apt/sources.list.d/${FROM_SUITE}.sources <<EOF
+          Types: deb-src
+          URIs: http://deb.debian.org/debian
+          Suites: ${FROM_SUITE}
+          Components: main
+          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+          EOF
           apt-get update
-          apt source -t "${FROM_SUITE}" "${PKG}"
+          apt source -t ${FROM_SUITE} "${PKG}"
+          rm -f /etc/apt/sources.list.d/${FROM_SUITE}.sources
+          apt-get update
 
-      - name: Prepare backport changelog + toggle Python bindings
+      - name: Backport changelog + (optionally) disable pybind
         env:
-          PKG: ${{ env.PKG }}
-          PYBIND: ${{ env.PYBIND }}
+          PKG: zxing-cpp
           SUITE: ${{ matrix.suite }}
-          BPO11: ${{ env.BPO11 }}
-          BPO12: ${{ env.BPO12 }}
         run: |
-          set -euo pipefail
-          cd "${PKG}-"*
-          BASE_VER="$(dpkg-parsechangelog -S Version | sed -E 's/~bpo(11|12)\+[0-9]+$//')"
+          set -e
+          cd ${PKG}-*
+          dch --bpo --distribution "${SUITE}" "Automated backport to ${SUITE}."
 
-          case "${SUITE}" in
-            bullseye) BPO="${BPO11}" ;;
-            bookworm) BPO="${BPO12}" ;;
-            *) echo "Unsupported target suite: ${SUITE}" >&2; exit 1 ;;
-          esac
-
-          # Autoincrement bpo counter locally
-          X=1
-          while grep -q "^${PKG} (${BASE_VER}${BPO}${X})" debian/changelog 2>/dev/null; do
-            X=$((X+1))
-          done
-          NEW_VER="${BASE_VER}${BPO}${X}"
-
-          dch -b --force-bad-version --no-auto-nmu \
-            --newversion "${NEW_VER}" \
-            --distribution "${SUITE}" \
-            "Automated backport to ${SUITE}."
-
-          # Optionally disable python bindings at build time
-          if [ "${PYBIND}" = "off" ]; then
-            echo 'export DEB_CMAKE_EXTRA_FLAGS += -DZXING_BUILD_PYTHON=OFF' >> debian/rules
-            dch -a "CI: disable Python bindings for ${SUITE} build."
-          fi
-
-      - name: Install build-deps
+      - name: Install build-deps from ${SUITE} (+ backports if needed)
         env:
-          PKG: ${{ env.PKG }}
+          PKG: zxing-cpp
+          SUITE: ${{ matrix.suite }}
         run: |
-          set -euo pipefail
-          cd "${PKG}-"*
-          # Use mk-build-deps (equivs) with a predictable solver call
+          set -e
+          cd ${PKG}-*
+          # Prefer $SUITE; resolver may pick backports only if strictly needed
           mk-build-deps --install --remove --tool \
-            'apt-get -o Debug::pkgProblemResolver=yes -y --no-install-recommends'
+            "apt-get -y -o APT::Default-Release=${SUITE} --no-install-recommends"
 
-      - name: Build (source + binary)
+      - name: Build
         env:
-          PKG: ${{ env.PKG }}
+          PKG: zxing-cpp
         run: |
-          set -euo pipefail
-          cd "${PKG}-"*
-          # Build both source and binaries, unsigned (you sign later if desired)
+          set -e
+          cd ${PKG}-*
           dpkg-buildpackage -us -uc
 
       - name: Collect & upload artifacts
