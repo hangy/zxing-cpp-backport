@@ -248,24 +248,28 @@ jobs:
   
           shopt -s nullglob globstar
   
-          # Include per-suite binaries, ddebs (if any) and source
+          # Include per-suite binaries, ddebs (if any) and full source
           for suite in bullseye bookworm; do
-            for deb in dist/**/${PKG}_*_*.deb; do
-              case "$deb" in *-${suite}-*) reprepro -b "$REPO" includedeb "$suite" "$deb" || true ;; esac
+            for deb in dist/**/**/*.deb; do
+              case "$deb" in
+                *-${suite}-*) reprepro -b "$REPO" includedeb "$suite" "$deb" || true ;;
+              esac
             done
-            for ddeb in dist/**/${PKG}_*_*.ddeb; do
-              case "$ddeb" in *-${suite}-*) reprepro -b "$REPO" includedeb "$suite" "$ddeb" || true ;; esac
+          
+            # DDEBs (if you generate them)
+            for ddeb in dist/**/**/*.ddeb; do
+              case "$ddeb" in
+                *-${suite}-*) reprepro -b "$REPO" includedeb "$suite" "$ddeb" || true ;;
+              esac
             done
-            for dsc in dist/**/${PKG}_*.dsc; do
-              case "$dsc" in *-${suite}-*) reprepro -b "$REPO" includedsc "$suite" "$dsc" || true ;; esac
+          
+            # Sources (.dsc) — requires the .orig/.debian tarballs to be present next to the .dsc
+            for dsc in dist/**/**/*.dsc; do
+              case "$dsc" in
+                *-${suite}-*) reprepro -b "$REPO" includedsc "$suite" "$dsc" || true ;;
+              esac
             done
           done
-  
-          # Export the repo signing pubkey if available
-          mkdir -p "$REPO/keys"
-          if gpg --batch --list-keys >/dev/null 2>&1; then
-            gpg --batch --export -a ${GPG_KEYID:+$GPG_KEYID} > "$REPO/keys/repo.asc" || true
-          fi
   
           tar -C "$REPO" -czf repo.tar.gz .
   
