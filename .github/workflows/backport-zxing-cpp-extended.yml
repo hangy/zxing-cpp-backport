@@ -74,7 +74,7 @@ jobs:
           if [ "${SUITE}" = "bullseye" ]; then
             {
               printf '%s\n' 'Types: deb'
-              printf '%s\n' 'URIs: http://deb.debian.org/debian'
+              printf '%s\n' 'URIs: http://archive.debian.org/debian'
               printf '%s\n' 'Suites: bullseye-backports'
               printf '%s\n' 'Components: main'
               printf '%s\n' 'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg'
