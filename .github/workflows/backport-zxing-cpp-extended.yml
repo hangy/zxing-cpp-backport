@@ -53,7 +53,6 @@ jobs:
       # maintainer identity for dch
       DEBFULLNAME: CI Backporter
       DEBEMAIL: ${{ github.actor }}@users.noreply.github.com
-      FROM_SUITE: ${{ env.FROM_SUITE }}
     steps:
       - name: Show container info
         run: |
