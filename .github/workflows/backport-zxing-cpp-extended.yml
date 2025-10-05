@@ -226,6 +226,26 @@ jobs:
           Architectures: amd64 arm64 source
           ${SIGN_LINE}
           EOF
+
+          if [ "${SUITE}" = "bullseye" ]; then
+            cat > /etc/apt/sources.list.d/${SUITE}-backports.sources <<EOF
+            Types: deb
+            URIs: http://deb.debian.org/debian
+            Suites: ${SUITE}-backports
+            Components: main
+            Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+            EOF
+            
+            # Prefer stable, but allow backports
+            cat > /etc/apt/preferences.d/99-backports <<'EOF'
+            Package: *
+            Pin: release n=bullseye-backports
+            Pin-Priority: 100
+            EOF
+          fi
+          
+          apt-get update
+
   
           shopt -s nullglob globstar
   
