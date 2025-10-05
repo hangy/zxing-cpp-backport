@@ -70,24 +70,23 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates debian-archive-keyring gnupg
           install -d /etc/apt/sources.list.d /etc/apt/preferences.d
-
+      
           if [ "${SUITE}" = "bullseye" ]; then
-            cat > /etc/apt/sources.list.d/bullseye-backports.sources <<EOF
-            Types: deb
-            URIs: http://deb.debian.org/debian
-            Suites: bullseye-backports
-            Components: main
-            Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
-            EOF
-            
-            # Prefer stable, but allow backports
-            cat > /etc/apt/preferences.d/99-backports <<EOF
-            Package: *
-            Pin: release n=bullseye-backports
-            Pin-Priority: 100
-            EOF
+            {
+              printf '%s\n' 'Types: deb'
+              printf '%s\n' 'URIs: http://deb.debian.org/debian'
+              printf '%s\n' 'Suites: bullseye-backports'
+              printf '%s\n' 'Components: main'
+              printf '%s\n' 'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg'
+            } | tee /etc/apt/sources.list.d/bullseye-backports.sources >/dev/null
+      
+            {
+              printf '%s\n' 'Package: *'
+              printf '%s\n' 'Pin: release n=bullseye-backports'
+              printf '%s\n' 'Pin-Priority: 100'
+            } | tee /etc/apt/preferences.d/99-backports >/dev/null
           fi
-
+      
           apt-get update
 
       - name: Install build helpers
@@ -106,17 +105,17 @@ jobs:
         shell: bash
         run: |
           set -e
-          # Temporarily add ${FROM_SUITE} deb-src to pull only the source
-          cat > /etc/apt/sources.list.d/${FROM_SUITE}.sources <<EOF
-          Types: deb-src
-          URIs: http://deb.debian.org/debian
-          Suites: ${FROM_SUITE}
-          Components: main
-          Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
-          EOF
+          install -d /etc/apt/sources.list.d
+          {
+            printf '%s\n' 'Types: deb-src'
+            printf '%s\n' 'URIs: http://deb.debian.org/debian'
+            printf '%s\n' "Suites: ${FROM_SUITE}"
+            printf '%s\n' 'Components: main'
+            printf '%s\n' 'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg'
+          } | tee "/etc/apt/sources.list.d/${FROM_SUITE}.sources" >/dev/null
           apt-get update
-          apt source -t ${FROM_SUITE} "${PKG}"
-          rm -f /etc/apt/sources.list.d/${FROM_SUITE}.sources
+          apt source -t "${FROM_SUITE}" "${PKG}"
+          rm -f "/etc/apt/sources.list.d/${FROM_SUITE}.sources"
           apt-get update
 
       - name: Backport changelog + (optionally) disable pybind
