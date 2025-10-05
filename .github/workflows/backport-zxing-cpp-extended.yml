@@ -148,16 +148,30 @@ jobs:
           apt-get update
           apt-get ${APT_FLAGS} -y --no-install-recommends build-dep .
 
-      - name: Bullseye pybind11 compat fix (bytes from data()+size())
+      - name: "Bullseye: add pybind11 compat quilt patch"
         if: matrix.suite == 'bullseye'
         env:
           PKG: zxing-cpp
         run: |
           set -e
           cd ${PKG}-*
-          # Replace py::bytes(std::string_view) with py::bytes(ptr, len)
-          sed -i 's/py::bytes(res.bytes().asString())/py::bytes(res.bytes().data(), res.bytes().size())/' wrappers\/python\/zxing.cpp
-          dch -a "CI: pybind11 compat for bullseye (avoid bytes(string_view))."
+          # Ensure patches dir exists even if the package had none
+          mkdir -p debian/patches
+          [ -f debian/patches/series ] || : > debian/patches/series
+      
+          export QUILT_PATCHES=debian/patches
+          export QUILT_SERIES=debian/patches/series
+      
+          # Start a new patch and register the file we’re going to change
+          quilt new 0001-pybind11-compat-on-bullseye-bytes-from-data-size.patch
+          quilt add wrappers/python/zxing.cpp
+      
+          # Apply the compatibility change
+          sed -i 's/py::bytes(res\.bytes().asString())/py::bytes(res.bytes().data(), res.bytes().size())/' \
+            wrappers/python/zxing.cpp
+      
+          # Write the patch to debian/patches and update series
+          quilt refresh
 
       - name: Build
         env:
