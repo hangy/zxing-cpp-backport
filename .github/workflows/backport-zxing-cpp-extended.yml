@@ -64,6 +64,7 @@ jobs:
       - name: Configure apt (suite + backports; Deb822)
         env:
           SUITE: ${{ matrix.suite }}
+        shell: bash
         run: |
           set -euo pipefail
           apt-get update
@@ -105,6 +106,7 @@ jobs:
         env:
           PKG: zxing-cpp
           FROM_SUITE: ${{ env.FROM_SUITE }}
+        shell: bash
         run: |
           set -e
           # Temporarily add ${FROM_SUITE} deb-src to pull only the source
@@ -133,6 +135,7 @@ jobs:
         env:
           PKG: zxing-cpp
           SUITE: ${{ matrix.suite }}
+        shell: bash
         run: |
           set -e
           cd ${PKG}-*
@@ -143,6 +146,7 @@ jobs:
       - name: Build
         env:
           PKG: zxing-cpp
+        shell: bash
         run: |
           set -e
           cd ${PKG}-*
