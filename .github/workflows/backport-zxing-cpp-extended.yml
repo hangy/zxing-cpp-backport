@@ -167,7 +167,7 @@ jobs:
           quilt add wrappers/python/zxing.cpp
       
           # Apply the compatibility change
-          sed -i 's/py::bytes(res\.bytes().asString())/py::bytes(res.bytes().data(), res.bytes().size())/' \
+          sed -i 's/py::bytes(res\.bytes().asString())/py::bytes(reinterpret_cast<const char*>(res.bytes().data()), res.bytes().size())/' \
             wrappers/python/zxing.cpp
       
           # Write the patch to debian/patches and update series
