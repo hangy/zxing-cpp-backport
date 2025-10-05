@@ -135,26 +135,18 @@ jobs:
           SUITE: ${{ matrix.suite }}
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           cd ${PKG}-*
-          echo "== Build-Depends from debian/control =="
-          grep -E '^(Build-Depends|Build-Depends-Indep):' debian/control || true
 
-          # Prefer the base suite; on bullseye also *target* backports so APT may pull the few newer bits
+          # Prefer base suite; on bullseye also allow backports to satisfy newer deps
           if [ "${SUITE}" = "bullseye" ]; then
-            TOOL='apt-get -y -o Debug::pkgProblemResolver=yes -o APT::Default-Release=bullseye -t bullseye-backports --no-install-recommends'
+            APT_FLAGS='-o APT::Default-Release=bullseye -t bullseye-backports'
           else
-            TOOL='apt-get -y --no-install-recommends'
+            APT_FLAGS=''
           fi
 
-          # Try once with our planned solver, and dump diagnostics on failure
-          if ! mk-build-deps --install --remove --tool "$TOOL"; then
-            echo "=== Diagnostic: apt-cache policy (top few) ==="
-            apt-cache policy | sed -n '1,200p' || true
-            echo "=== Diagnostic: candidates for common deps ==="
-            apt-cache policy pybind11-dev cmake ninja-build || true
-            exit 1
-          fi
+          apt-get update
+          apt-get ${APT_FLAGS} -y --no-install-recommends build-dep .
 
       - name: Build
         env:
