@@ -70,6 +70,8 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates debian-archive-keyring gnupg
           install -d /etc/apt/sources.list.d /etc/apt/preferences.d
+
+          echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
       
           if [ "${SUITE}" = "bullseye" ]; then
             {
@@ -135,9 +137,24 @@ jobs:
         run: |
           set -e
           cd ${PKG}-*
-          # Prefer $SUITE; resolver may pick backports only if strictly needed
-          mk-build-deps --install --remove --tool \
-            "apt-get -y -o APT::Default-Release=${SUITE} --no-install-recommends"
+          echo "== Build-Depends from debian/control =="
+          grep -E '^(Build-Depends|Build-Depends-Indep):' debian/control || true
+
+          # Prefer the base suite; on bullseye also *target* backports so APT may pull the few newer bits
+          if [ "${SUITE}" = "bullseye" ]; then
+            TOOL='apt-get -y -o Debug::pkgProblemResolver=yes -o APT::Default-Release=bullseye -t bullseye-backports --no-install-recommends'
+          else
+            TOOL='apt-get -y --no-install-recommends'
+          fi
+
+          # Try once with our planned solver, and dump diagnostics on failure
+          if ! mk-build-deps --install --remove --tool "$TOOL"; then
+            echo "=== Diagnostic: apt-cache policy (top few) ==="
+            apt-cache policy | sed -n '1,200p' || true
+            echo "=== Diagnostic: candidates for common deps ==="
+            apt-cache policy pybind11-dev cmake ninja-build || true
+            exit 1
+          fi
 
       - name: Build
         env:
