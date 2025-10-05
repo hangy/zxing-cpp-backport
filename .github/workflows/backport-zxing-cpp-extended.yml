@@ -233,7 +233,7 @@ jobs:
             URIs: http://deb.debian.org/debian
             Suites: ${SUITE}-backports
             Components: main
-            Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+            ${SIGN_LINE}
             EOF
             
             # Prefer stable, but allow backports
@@ -245,8 +245,7 @@ jobs:
           fi
           
           apt-get update
-
-  
+          
           shopt -s nullglob globstar
   
           # Include per-suite binaries, ddebs (if any) and full source
